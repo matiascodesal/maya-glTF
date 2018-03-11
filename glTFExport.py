@@ -2,15 +2,21 @@ import json
 import struct
 import sys
 import base64
+import math
 import maya.cmds
 import maya.OpenMaya as OpenMaya
 import shutil
 import os
 
-output = {
+
+class GLTFExporter(object):
+    
+    output_file = 'C:/tmp_data/data.gltf'
+    def __init__(self):
+        self.output = {
             "asset": { 
                 "version": "2.0", 
-                "generator": "maya-glTFExporter", 
+                "generator": "maya-glTFExport", 
                 "copyright": "2018 (c) Matias Codesal" 
             },
             "scenes": [], # not required
@@ -24,43 +30,522 @@ output = {
             "bufferViews": [],
             "accessors": []
         }
-output_file = 'C:/tmp_data/data.gltf'
-output_dir = os.path.dirname(output_file)
-def main():
-    createScene()
-    for transform in maya.cmds.ls(assemblies=True):
-        node_index = addNode(transform)
-        # add the node index to list of top nodes for the scene
-        output["scenes"][0]["nodes"].append(node_index)
-    #validate()
-    with open(output_file, 'w') as outfile:
-        json.dump(output, outfile)
+    def export_scene(self, file_path=None, type='gltf'):
+        self.output_file = file_path
+        if not self.output_file:
+            self.output_file = maya.cmds.fileDialog2(caption="Specify a name for the file to export.",
+                                                fileMode=0)[0]
+        self.output_dir = os.path.dirname(self.output_file)                                     
+        # TODO: validate file_path and type
+        index = len(self.output['scenes'])
+        scene = Scene(index, export_ctx=self)
+        self.output['scenes'].append(scene)
+        # we only support exporting single scenes, 
+        # so the first scene is the active scene
+        self.output['scene'] = 0
+        print self.output
+        #TODO: makedirs
+        with open(self.output_file, 'w') as outfile:
+            json.dump(self.output, outfile, cls=GLTFEncoder)
+
+    def export_selected(self, file_path, type='gltf'):
+        if not file_path:
+            file_path = maya.cmds.fileDialog2(caption="Specify a name for the file to export.",
+                                                fileMode=0)
+        # TODO: validate file_path and type
+        scene = Scene(nodes=maya.cmds.ls(selection=True), export_ctx=self)
     
-def validate():
-    offset = output["bufferViews"][0]["byteOffset"]
-    length = output["bufferViews"][0]["byteLength"]
-    stream = output["buffers"][0]["uri"].split("data:application/octet-stream;base64,")[-1]
-    byteStr = base64.b64decode(stream)
-    byteStr = byteStr[offset:length]
-    ints = []
-    for i in range(0, len(byteStr), 2):
-        ints.append(struct.unpack("<H", byteStr[i:i+2])[0])
-        ints[len(ints)-1]
-    print len(ints)
-    print ints
-    
-    offset = output["bufferViews"][1]["byteOffset"]
-    length = output["bufferViews"][1]["byteLength"]
-    stream = output["buffers"][0]["uri"].split("data:application/octet-stream;base64,")[-1]
-    byteStr = base64.b64decode(stream)
-    byteStr = byteStr[offset:offset+length]
-    points = []
-    for i in range(0, len(byteStr), 12):
-        points.append(struct.unpack("<fff", byteStr[i:i+12]))
+    def _create_node(self, maya_node):
+        next_index = len(self.output['nodes'])
+        print next_index, maya_node
+        # Need to temporarily add it to list because
+        # of the recursive nature of the algorithm
+        self.output['nodes'].append(None)
+        node = Node(next_index, self, maya_node)
+        self.output['nodes'][next_index] = node
+        return node
         
-    print len(points)
-    print points
+    def _create_camera(self, maya_node):
+        next_index = len(self.output['cameras'])
+        if maya.cmds.camera(maya_node, query=True, orthographic=True):
+            cam = OrthographicCamera(next_index, self, maya_node)
+        else:
+            cam = PerspectiveCamera(next_index, self, maya_node)
+        self.output['cameras'].append(cam)
+        return cam
     
+    def _create_mesh(self, maya_node):
+        next_index = len(self.output['meshes'])
+        mesh = Mesh(next_index, self, maya_node)
+        self.output['meshes'].append(mesh)
+        return mesh
+    
+    def _create_material(self, maya_node):
+        next_index = len(self.output['materials'])
+        mat = Material(next_index, self, maya_node)
+        self.output['materials'].append(mat)
+        return mat
+    
+    def _create_image(self, file_path):
+        next_index = len(self.output['images'])
+        img = Image(next_index, self, file_path)
+        self.output['images'].append(img)
+        return img
+    
+    def _create_texture(self, image):
+        next_index = len(self.output['textures'])
+        texture = Texture(next_index, self, image)
+        self.output['textures'].append(texture)
+        return texture
+        
+    def _create_buffer(self, name):
+        next_index = len(self.output['buffers'])
+        buffer = Buffer(next_index, self, name)
+        self.output['buffers'].append(buffer)
+        return buffer
+    
+    def _create_buffer_view(self, buffer, byte_offset, target):
+        next_index = len(self.output['bufferViews'])
+        bv = BufferView(next_index, self, buffer, byte_offset, target)
+        self.output['bufferViews'].append(bv)
+        return bv
+    
+    def _create_accessor(self, name, data, type, component_type, target, buffer):
+        next_index = len(self.output['accessors'])
+        accessor = Accessor(next_index, self, data, type, component_type, target, buffer, name=name)
+        self.output['accessors'].append(accessor)
+        return accessor
+
+        
+class GLTFEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, ExportItem):
+            return obj.to_json()
+        # Let the base class default method raise the TypeError
+        return json.JSONEncoder.default(self, obj)
+        '''
+        for key in obj.keys():
+            if key not in ignored_keys:
+                obj[key] = [item.to_json() for item in obj[key]]
+        
+        return obj
+        '''
+   
+class ExportItem(object):
+    
+    def __init__(self, index, export_ctx, name=None):
+        self.index = index
+        self.name = name
+        self.context = export_ctx
+    
+    
+class Scene(ExportItem):
+    '''Needs to add itself to scenes'''
+    maya_nodes = None
+    nodes = []
+    def __init__(self, index, export_ctx, name="defaultScene", maya_nodes=maya.cmds.ls(assemblies=True, long=True)):
+        super(Scene, self).__init__(index, export_ctx, name=name)
+        self.maya_nodes = maya_nodes
+        for transform in self.maya_nodes:
+            if transform not in Camera.default_cameras:
+                self.nodes.append(self.context._create_node(transform))
+        
+    def to_json(self):
+        scene_def = {"name":self.name, "nodes":[node.index for node in self.nodes]}
+        return scene_def
+
+class Node(ExportItem):
+    '''Needs to add itself to nodes list, possibly node children, and possibly scene'''
+    maya_node = None
+    matrix = None
+    camera = None
+    mesh = None
+
+    def __init__(self, index, export_ctx, maya_node):
+        self.maya_node = maya_node
+        name = maya.cmds.ls(maya_node, shortNames=True)[0]
+        super(Node, self).__init__(index, export_ctx, name=name)
+        self.children = []
+        
+        self.matrix = maya.cmds.xform(self.maya_node, query=True, matrix=True)
+        maya_children = maya.cmds.listRelatives(self.maya_node, children=True, fullPath=True)
+        if maya_children:
+            for child in maya_children:
+                childType = maya.cmds.objectType(child)
+                if childType == 'mesh':
+                    mesh = self.context._create_mesh(child)
+                    self.mesh = mesh 
+                elif childType == 'camera':
+                    cam = self.context._create_camera(child)
+                    self.camera = cam
+                elif childType == 'transform':
+                    node = self.context._create_node(child)
+                    self.children.append(node)
+    
+    def to_json(self):
+        node_def = {'matrix' : self.matrix}
+        if self.children:
+            node_def['children'] = [child.index for child in self.children]
+        if self.mesh:
+            node_def['mesh'] = self.mesh.index
+        if self.camera:
+            node_def['camera'] = self.camera.index
+        return node_def
+                     
+        
+class Mesh(ExportItem):
+    '''Needs to add itself to node and its accesors to meshes list'''
+    maya_node = None
+    material = None
+    indices_accessor = None
+    position_accessor = None
+    normal_accessor = None
+    texcoord0_accessor = None
+    def __init__(self, index, export_ctx, maya_node):
+        self.maya_node = maya_node
+        name = maya.cmds.ls(maya_node, shortNames=True)[0]
+        super(Mesh, self).__init__(index, export_ctx, name=name)
+        
+        self._getMeshData()
+        self._getMaterial()
+        
+    def to_json(self):
+        mesh_def = {"primitives" : [ {
+                        "mode": 4,
+                        "attributes" : {
+                          "POSITION" : self.position_accessor.index,
+                          "NORMAL": self.normal_accessor.index ,
+                          "TEXCOORD_0": self.texcoord0_accessor.index
+                        },
+                        "indices" : self.indices_accessor.index,
+                        "material" : self.material.index
+                      } ]
+                    }
+        return mesh_def
+                    
+    def _getMaterial(self):
+        shadingGrps = maya.cmds.listConnections(self.maya_node,type='shadingEngine')
+        # glTF only allows one materical per mesh, so we'll just grab the first one.
+        shader = maya.cmds.ls(maya.cmds.listConnections(shadingGrps),materials=True)[0]
+        self.material = self.context._create_material(shader)
+        
+    def _getMeshData(self):
+        maya.cmds.select(self.maya_node)
+        selList = OpenMaya.MSelectionList()
+        OpenMaya.MGlobal.getActiveSelectionList(selList)
+        meshPath = OpenMaya.MDagPath()
+        selList.getDagPath(0, meshPath)
+        meshIt = OpenMaya.MItMeshPolygon(meshPath)
+        meshFn = OpenMaya.MFnMesh(meshPath)
+        do_color = False
+        if meshFn.numColorSets():
+            do_color=True
+            print "doing color"
+        indices = []
+        positions = [None]*meshFn.numVertices()
+        normals = [None]*meshFn.numVertices()
+        all_colors = [None]*meshFn.numVertices()
+        uvs = [None]*meshFn.numVertices()
+        ids = OpenMaya.MIntArray()
+        points = OpenMaya.MPointArray()
+        if do_color:
+            vertexColorList = OpenMaya.MColorArray()
+            meshFn.getFaceVertexColors(vertexColorList)
+        #meshIt.hasUVs()
+        normal = OpenMaya.MVector()
+        face_verts = OpenMaya.MIntArray()
+        polyNormals = OpenMaya.MFloatVectorArray()
+        meshFn.getNormals(polyNormals)
+        uv_util = OpenMaya.MScriptUtil()
+        uv_util.createFromList([0,0], 2 )
+        uv_ptr = uv_util.asFloat2Ptr()
+        bbox = BoundingBox()
+        while not meshIt.isDone():
+            meshIt.getTriangles(points, ids)
+            #meshIt.getUVs(u_list, v_list)        
+            meshIt.getVertices(face_verts)
+            for x in range(0, ids.length()):
+                indices.append(ids[x])
+                pos = (points[x].x, points[x].y, points[x].z)
+                
+                local_vert_id = getFaceVertexIndex(face_verts, ids[x])
+                #print "local vert:", local_vert_id
+                norm_id = meshIt.normalIndex(local_vert_id)
+                #meshIt.getNormal(local_vert_id, normal)
+                normal = polyNormals[norm_id]
+                norm = (normal.x, normal.y, normal.z)
+                #print norm
+                meshIt.getUV(local_vert_id, uv_ptr, meshFn.currentUVSetName())
+                u = uv_util.getFloat2ArrayItem( uv_ptr, 0, 0 )
+                v = uv_util.getFloat2ArrayItem( uv_ptr, 0, 1 )
+                # flip V for openGL
+                # This fails if the the UV is exactly on the border (e.g. (0.5,1))
+                # but we really don't know what udim it's in for that case.
+                v = int(v) + (1 - (v % 1))
+                uv = (u, v)
+                if not positions[ids[x]]:   
+                    positions[ids[x]] = pos
+                    normals[ids[x]] = norm
+                    uvs[ids[x]] = uv              
+                elif not ( positions[ids[x]] == pos and
+                            normals[ids[x]] == norm and
+                            uvs[ids[x]] == uv):
+                    matched = False
+                    for i in range(0, len(positions)):
+                        if ( positions[i] == pos and
+                            normals[i] == norm and
+                            uvs[i] == uv):
+                            matched = True
+                            indices[-1] = i
+                            break
+                    if not matched:
+                        positions.append(pos)
+                        normals.append(norm)
+                        uvs.append(uv)
+                        indices[-1] = len(positions)-1
+                        
+                
+                if do_color:
+                    color = vertexColorList[ids[x]]
+                    all_colors[ids[x]] = (color.r, color.g, color.b)
+                if points[x].x > bbox.xmax:
+                    bbox.xmax = points[x].x
+                elif points[x].y > bbox.ymax:
+                    bbox.ymax = points[x].y
+                elif points[x].z > bbox.zmax:
+                    bbox.zmax = points[x].z
+                elif points[x].x < bbox.xmin:
+                    bbox.xmin = points[x].x
+                elif points[x].y < bbox.ymin:
+                    bbox.ymin = points[x].y
+                elif points[x].z < bbox.zmin:
+                    bbox.zmin = points[x].z   
+            meshIt.next()
+
+        buffer_name = self.name + '_geom'
+        geom_buffer = self.context._create_buffer(buffer_name)
+        self.indices_accessor = self.context._create_accessor(self.name + '_idx', indices, "SCALAR", 5123, 34963, geom_buffer)
+        self.indices_accessor.min = [0]
+        self.indices_accessor.max = [len(positions) - 1]
+        self.position_accessor = self.context._create_accessor(self.name + '_pos', positions, "VEC3", 5126, 34962, geom_buffer)
+        self.position_accessor.max = [ bbox.xmax, bbox.ymax, bbox.zmax ]
+        self.position_accessor.min =  [ bbox.xmin, bbox.ymin, bbox.zmin ]
+        self.normal_accessor = self.context._create_accessor(self.name + '_norm', normals, "VEC3", 5126, 34962, geom_buffer)
+        self.texcoord0_accessor = self.context._create_accessor(self.name + '_uv', uvs, "VEC2", 5126, 34962, geom_buffer)
+        
+
+class Material(ExportItem):
+    '''Needs to add itself to materials and meshes list'''
+    maya_node = None
+    base_color_factor = None
+    base_color_texture = None
+    metallic_factor = None
+    roughness_factor = None
+    transparency = None
+    
+    def __init__(self, index, export_ctx, maya_node):
+        self.maya_node = maya_node
+        name = maya.cmds.ls(maya_node, shortNames=True)[0]
+        super(Material, self).__init__(index, export_ctx, name=name)
+        
+        color_conn = maya.cmds.listConnections(self.maya_node+'.color')
+        trans = list(maya.cmds.getAttr(self.maya_node+'.transparency')[0])
+        self.transparency = sum(trans) / float(len(trans))
+        if color_conn and maya.cmds.objectType(color_conn[0]) == 'file':
+            file_node = color_conn[0]
+            file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
+            image = self.context._create_image(file_path)
+            self.base_color_texture = self.context._create_texture(image)
+        else:
+            color = list(maya.cmds.getAttr(self.maya_node+'.color')[0])
+            color.append(1-self.transparency)
+            self.base_color_factor = color
+        
+        self.metallic_factor = 0
+        self.roughness_factor = 0
+
+    def to_json(self):
+        pbr = {}
+        mat_def = {'pbrMetallicRoughness': pbr}
+        if self.base_color_texture:
+            pbr['baseColorTexture'] = {'index':self.base_color_texture.index}
+        else:
+            pbr['baseColorFactor'] = self.base_color_factor
+
+        pbr['metallicFactor'] = self.metallic_factor
+        pbr['roughnessFactor'] = self.roughness_factor
+        
+        return mat_def
+
+
+class Camera(ExportItem):
+    '''Needs to add itself to node and cameras list'''
+    default_cameras = ['|top', '|front', '|side', '|persp']
+    maya_node = None
+    type = None
+    znear = 0.1
+    zfar = 1000
+    def __init__(self, index, export_ctx, maya_node):
+        self.maya_node = maya_node
+        name = maya.cmds.ls(maya_node, shortNames=True)[0]
+        super(Camera, self).__init__(index, export_ctx, name=name)
+        self.znear = maya.cmds.camera(self.maya_node, query=True, nearClipPlane=True)
+        self.zfar = maya.cmds.camera(self.maya_node, query=True, farClipPlane=True)
+        
+    def to_json(self):
+        if not self.type:
+            # TODO: use custom error or ensure type is set
+            raise RuntimeError("Type property was not defined")
+        camera_def = {'type' : self.type}
+        camera_def[self.type] = {'znear' : self.znear,
+                                    'zfar' : self.zfar}
+        return camera_def
+ 
+    
+class PerspectiveCamera(Camera):
+    type = 'perspective'
+    
+    def __init__(self, index, export_ctx, maya_node):
+        super(PerspectiveCamera, self).__init__(index, export_ctx, maya_node)
+        self.aspect_ratio = maya.cmds.camera(self.maya_node, query=True, aspectRatio=True)
+        self.yfov = math.radians(maya.cmds.camera(self.maya_node, query=True, verticalFieldOfView=True))
+        
+    def to_json(self):
+        camera_def = super(PerspectiveCamera, self).to_json()
+        camera_def[self.type]['aspectRatio'] = self.aspect_ratio
+        camera_def[self.type]['yfov'] = self.yfov
+        return camera_def
+    
+class OrthographicCamera(Camera):
+    type = 'orthographic'
+    xmag = 1.0
+    ymag = 1.0
+    
+    def __init__(self, index, export_ctx, maya_node):
+        super(OrthographicCamera, self).__init__(index, export_ctx, maya_node)
+        self.xmag = maya.cmds.camera(self.maya_node, query=True, orthographicWidth=True)
+        self.ymag = self.xmag
+    
+    def to_json(self):
+        camera_def = super(OrthographicCamera, self).to_json()
+        camera_def[self.type]['xmag'] = self.xmag
+        camera_def[self.type]['ymag'] = self.ymag
+        return camera_def
+    
+
+class Image(ExportItem):
+    '''Needs to be added to images list and it's texture'''
+    name = None
+    uri = None
+    def __init__(self, index, export_ctx, file_path):
+        file_name = os.path.basename(file_path)
+        super(Image, self).__init__(index, export_ctx, name=file_name)
+        
+        shutil.copy(file_path, self.context.output_dir)
+        self.uri = file_name
+    
+    def to_json(self):
+        return {'uri':self.uri}
+    
+class Texture(ExportItem):
+    '''Needs to be added to textures list and it's material'''
+    image = None
+    def __init__(self, index, export_ctx, image):
+        self.image = image
+        super(Texture, self).__init__(index, export_ctx, name=image.name)
+    
+    def to_json(self):
+        return {'source':self.image.index}
+
+class Sampler(ExportItem):
+    def __init__(index, export_ctx, name=None):
+        super(Sampler, self).__init__(index, export_ctx, name=name)
+        
+    
+class Buffer(ExportItem):
+    byte_str = ""
+
+    def __init__(self, index, export_ctx, name=None):
+        super(Buffer, self).__init__(index, export_ctx, name=name)
+    
+    def __len__(self):
+        return len(self.byte_str)
+    
+    def append_data(self, data, type):
+        pack_type = '<' + type
+        packed_data = []
+        for item in data:
+            if isinstance(item, (list, tuple)):
+                packed_data.append(struct.pack(pack_type, *item))
+            else:
+                packed_data.append(struct.pack(pack_type, item))
+        self.byte_str += b''.join(packed_data)
+    
+    def to_json(self):
+        buffer_def = {
+          "uri" : "data:application/octet-stream;base64," + base64.b64encode(self.byte_str),
+          "byteLength" : len(self)
+        }
+        return buffer_def
+
+class BufferView(ExportItem):
+    buffer = None
+    byte_offset = None
+    byte_length = None
+    target = 34962
+    
+    def __init__(self, index, export_ctx, buffer, byte_offset, target, name=None):
+        super(BufferView, self).__init__(index, export_ctx, name=name)
+        self.buffer = buffer
+        self.byte_offset = byte_offset
+        self.byte_length = len(buffer) - byte_offset
+        self.target = target
+        
+    def to_json(self):
+        buffer_view_def = {
+          "buffer" : self.buffer.index,
+          "byteOffset" : self.byte_offset,
+          "byteLength" : self.byte_length,
+          "target" : self.target
+        }
+        return buffer_view_def
+    
+class Accessor(ExportItem):
+    buffer_view = None
+    byte_offset = 0
+    component_type = None
+    count = None
+    type = None
+    src_data = None
+    max  = None
+    min = None
+    type_codes = {"SCALAR":1,"VEC2":2,"VEC3":3}
+    component_type_codes = {5123:"H",5126:"f"}
+    
+    def __init__(self, index, export_ctx, data, type, component_type, target, buffer, name=None):
+        super(Accessor, self).__init__(index, export_ctx, name=name)
+        self.src_data = data
+        self.component_type = component_type
+        self.type = type
+        byte_code = self.component_type_codes[component_type]*self.type_codes[type]
+        
+        buffer_end = len(buffer)
+        buffer.append_data(self.src_data, byte_code)
+        self.buffer_view = self.context._create_buffer_view(buffer, buffer_end, target)
+        
+    def to_json(self):
+        accessor_def = {
+          "bufferView" : self.buffer_view.index,
+          "byteOffset" : self.byte_offset,
+          "componentType" : self.component_type,
+          "count" : len(self.src_data),
+          "type" : self.type
+        }
+        if self.max:
+            accessor_def['max'] = self.max
+        if self.min:
+            accessor_def['min'] = self.min
+        return accessor_def
     
 def createScene():
     output["scenes"] = [{"name":"defaultScene", "nodes":[]}]
@@ -104,6 +589,7 @@ def addNode(node):
     
     print node, len(output["nodes"]) - 1
     return len(output["nodes"]) - 1
+    
 def addCamera(camera):
     camera_def = {}
     if maya.cmds.camera(camera, query=True, orthographic=True):
@@ -516,4 +1002,29 @@ def getBoundingBox():
 
     min = boundingBox.min()
     max = boundingBox.max()
+
+def validate():
+    offset = output["bufferViews"][0]["byteOffset"]
+    length = output["bufferViews"][0]["byteLength"]
+    stream = output["buffers"][0]["uri"].split("data:application/octet-stream;base64,")[-1]
+    byteStr = base64.b64decode(stream)
+    byteStr = byteStr[offset:length]
+    ints = []
+    for i in range(0, len(byteStr), 2):
+        ints.append(struct.unpack("<H", byteStr[i:i+2])[0])
+        ints[len(ints)-1]
+    print len(ints)
+    print ints
+    
+    offset = output["bufferViews"][1]["byteOffset"]
+    length = output["bufferViews"][1]["byteLength"]
+    stream = output["buffers"][0]["uri"].split("data:application/octet-stream;base64,")[-1]
+    byteStr = base64.b64decode(stream)
+    byteStr = byteStr[offset:offset+length]
+    points = []
+    for i in range(0, len(byteStr), 12):
+        points.append(struct.unpack("<fff", byteStr[i:i+12]))
+        
+    print len(points)
+    print points
     
