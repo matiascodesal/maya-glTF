@@ -10,12 +10,12 @@ Download the glTFExport.py file and put it in your Maya scripts directory: https
 Opens a file dialog to specify the output file and runs.
 ```python
 import glTFExport   
-glTFExport.GLTFExporter().export_scene()
+glTFExport.export()
 ```
 Runs with no file dialog and ouputs the the string path specified.
 ```python
 import glTFExport   
-glTFExport.GLTFExporter().export_scene(r"C:\Temp\test.gltf")
+glTFExport.export(r"C:\Temp\test.gltf")
 ```
 
 ### Current Features
