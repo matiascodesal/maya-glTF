@@ -15,7 +15,13 @@ glTFExport.export()
 Runs with no file dialog and ouputs the the string path specified.
 ```python
 import glTFExport   
-glTFExport.export(r"C:\Temp\test.gltf")
+glTFExport.export(r"C:\Temp\test.glb")
+```
+
+For glTF with external images:
+```python
+import glTFExport   
+glTFExport.export(r"C:\Temp\test.gltf", type='gltf', bin_format='flattened')
 ```
 
 ### Current Features
@@ -25,9 +31,13 @@ glTFExport.export(r"C:\Temp\test.gltf")
    - Picks the first shader.
    - Exports shader color attribute.  Textures are WIP and may conflict.
    - Metallic and Roughness hard-coded
-- glTF format only currently.
+- glTF and glb supported
+- Options for embedded binary data, single external bin, or preserved external images.
    
 ### TODO
 - Continue implementing the rest of glTF spec
-- Add glb option
 - Add export_selected
+- lambert, phong, etc conversion to pbr
+- Add support for more map types appart from diffuse
+- Simplify export options
+- Write tests

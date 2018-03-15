@@ -8,25 +8,42 @@ import maya.OpenMaya as OpenMaya
 import shutil
 import os
 
+class BinFormats(object):
+    EMBEDDED = 'embedded'
+    FLATTENED = 'flattened'
+    EXTERNAL = 'external'
+    GLB = 'glb'
 
 class GLTFExporter(object):
-    
-    def __init__(self, file_path):
+    # TODO: Add VFlip option
+    def __init__(self, file_path, type='gltf', bin_format='flattened'):
         self.output = {
             "asset": { 
                 "version": "2.0", 
                 "generator": "maya-glTFExport", 
-                "copyright": "2018 (c) Matias Codesal" 
             }
         }
         self.output_file = file_path
-    
+        
+        self.type = type
+        self.bin_format = bin_format
+        
     def run(self):
         if not self.output_file:
             self.output_file = maya.cmds.fileDialog2(caption="Specify a name for the file to export.",
                                                         fileMode=0)[0]
+        basename, ext = os.path.splitext(self.output_file)
+        if self.type == 'glb':
+            self.output_file = basename + '.glb'
+        else:
+            self.output_file = basename + '.gltf'
         self.output_dir = os.path.dirname(self.output_file)
         Image.output_dir = self.output_dir
+        Image.format = self.bin_format
+        Buffer.format = self.bin_format
+        if self.bin_format == BinFormats.EXTERNAL:
+            Buffer.uri = Image.uri = os.path.basename(basename) + '.bin'
+
     
         # TODO: validate file_path and type
         scene = Scene()
@@ -54,12 +71,46 @@ class GLTFExporter(object):
         if Accessor.instances:
             self.output['accessors'] = Accessor.instances
             
-        #TODO: makedirs
-        with open(self.output_file, 'w') as outfile:
-            json.dump(self.output, outfile, cls=GLTFEncoder)
+        if self.type == 'glb':
+            
+            json_str = json.dumps(self.output, sort_keys=True, separators=(',', ':'), cls=GLTFEncoder)
+            json_bin = bytearray(json_str.encode(encoding='UTF-8'))
+            # 4-byte-aligned
+            aligned_len = (len(json_bin) + 3) & ~3
+            for i in range(aligned_len - len(json_bin)):
+                json_bin.extend(b' ')
+
+            bin_out = bytearray()
+            buffer = Buffer.instances[0]
+            file_length = 12 + 8 + len(json_bin) + 8 + len(buffer)
+            # Magic number
+            bin_out.extend(struct.pack('<I', 0x46546C67)) # glTF in binary
+            bin_out.extend(struct.pack('<I', 2)) # version number
+            bin_out.extend(struct.pack('<I', file_length))
+            bin_out.extend(struct.pack('<I', len(json_bin)))
+            bin_out.extend(struct.pack('<I', 0x4E4F534A)) # JSON in binary
+            bin_out += json_bin
+            
+            bin_out.extend(struct.pack('<I', len(buffer))) 
+            bin_out.extend(struct.pack('<I', 0x004E4942)) # BIN in binary
+            bin_out += buffer.byte_str
+            
+            with open(self.output_file, 'wb') as outfile:
+                outfile.write(bin_out)
+        else:
+            #TODO: makedirs
+            with open(self.output_file, 'w') as outfile:
+                json.dump(self.output, outfile, cls=GLTFEncoder)
+            
+            if self.bin_format == BinFormats.EXTERNAL:
+                buffer = Buffer.instances[0]
+                print buffer.uri
+                print self.output_dir
+                with open(self.output_dir + "/" + buffer.uri, 'wb') as outfile:
+                    outfile.write(buffer.byte_str)
         
-def export(file_path=None, type='gltf', selection=False):
-    GLTFExporter(file_path).run()
+def export(file_path=None, type='glb', bin_format='glb', selection=False):
+    GLTFExporter(file_path, type, bin_format).run()
     
         
 class GLTFEncoder(json.JSONEncoder):
@@ -147,6 +198,7 @@ class Node(ExportItem):
 class Mesh(ExportItem):
     '''Needs to add itself to node and its accesors to meshes list'''
     instances = []
+    format = None
     maya_node = None
     material = None
     indices_accessor = None
@@ -276,16 +328,18 @@ class Mesh(ExportItem):
                     bbox.zmin = points[x].z   
             meshIt.next()
 
-        buffer_name = self.name + '_geom'
-        geom_buffer = Buffer(buffer_name)
-        self.indices_accessor = Accessor(indices, "SCALAR", 5123, 34963, geom_buffer, name=self.name + '_idx')
+        if not len(Buffer.instances):
+            primary_buffer = Buffer('primary_buffer')
+        else:
+            primary_buffer = Buffer.instances[0]
+        self.indices_accessor = Accessor(indices, "SCALAR", 5123, 34963, primary_buffer, name=self.name + '_idx')
         self.indices_accessor.min = [0]
         self.indices_accessor.max = [len(positions) - 1]
-        self.position_accessor = Accessor(positions, "VEC3", 5126, 34962, geom_buffer, name=self.name + '_pos')
+        self.position_accessor = Accessor(positions, "VEC3", 5126, 34962, primary_buffer, name=self.name + '_pos')
         self.position_accessor.max = [ bbox.xmax, bbox.ymax, bbox.zmax ]
         self.position_accessor.min =  [ bbox.xmin, bbox.ymin, bbox.zmin ]
-        self.normal_accessor = Accessor(normals, "VEC3", 5126, 34962, geom_buffer, name=self.name + '_norm')
-        self.texcoord0_accessor = Accessor(uvs, "VEC2", 5126, 34962, geom_buffer, name=self.name + '_uv')
+        self.normal_accessor = Accessor(normals, "VEC3", 5126, 34962, primary_buffer, name=self.name + '_norm')
+        self.texcoord0_accessor = Accessor(uvs, "VEC2", 5126, 34962, primary_buffer, name=self.name + '_uv')
         
 
 class Material(ExportItem):
@@ -410,20 +464,48 @@ class OrthographicCamera(Camera):
 class Image(ExportItem):
     '''Needs to be added to images list and it's texture'''
     instances = []
+    format = None
     output_dir = ""
     name = None
     uri = None
-    def __init__(self, file_path, output_dir):
+    buffer_view = None
+    mime_type = None
+    
+    def __init__(self, file_path):
         file_name = os.path.basename(file_path)
         super(Image, self).__init__(name=file_name)
-        self.index = len(Texture.instances)
-        Texture.instances.append(self)
+        self.index = len(Image.instances)
+        Image.instances.append(self)
+        base, ext = os.path.splitext(file_path)
+        self.mime_type = 'image/{}'.format(ext.lower()[1:])
+        if self.format == BinFormats.FLATTENED:
+            shutil.copy(file_path, self.output_dir)
+            self.uri = file_name
+        else:
+            with open(file_path, 'rb') as f:
+                img_bytes = f.read()
+            
+            if self.format in [BinFormats.EXTERNAL, BinFormats.GLB]:
+                single_buffer = Buffer.instances[0]
+                buffer_end = len(single_buffer)
+                single_buffer.byte_str += img_bytes
+                self.buffer_view = BufferView(single_buffer, buffer_end)
+                
+                # 4-byte-aligned
+                aligned_len = (len(img_bytes) + 3) & ~3
+                for i in range(aligned_len - len(img_bytes)):
+                    single_buffer.byte_str += b' '
         
-        shutil.copy(file_path, output_dir)
-        self.uri = file_name
+        if self.format == BinFormats.EMBEDDED:
+            self.uri = "data:application/octet-stream;base64," + base64.b64encode(img_bytes)
     
     def to_json(self):
-        return {'uri':self.uri}
+        img_def = {'mimeType' : self.mime_type}
+        if self.uri:
+            img_def['uri'] = self.uri
+        else:
+            img_def['bufferView'] = self.buffer_view.index
+        return img_def
     
 class Texture(ExportItem):
     '''Needs to be added to textures list and it's material'''
@@ -446,6 +528,8 @@ class Sampler(ExportItem):
 class Buffer(ExportItem):
     instances = []
     byte_str = ""
+    format = None
+    uri = ''
 
     def __init__(self, name=None):
         super(Buffer, self).__init__(name=name)
@@ -466,10 +550,12 @@ class Buffer(ExportItem):
         self.byte_str += b''.join(packed_data)
     
     def to_json(self):
-        buffer_def = {
-          "uri" : "data:application/octet-stream;base64," + base64.b64encode(self.byte_str),
-          "byteLength" : len(self)
-        }
+        buffer_def = {"byteLength" : len(self)}
+        if self.uri and self.format == BinFormats.EXTERNAL:
+            buffer_def['uri'] = self.uri
+        elif self.format in [BinFormats.EMBEDDED, BinFormats.FLATTENED]:
+            buffer_def['uri'] = "data:application/octet-stream;base64," + base64.b64encode(self.byte_str)
+        # no uri for GLB
         return buffer_def
 
 class BufferView(ExportItem):
@@ -479,7 +565,7 @@ class BufferView(ExportItem):
     byte_length = None
     target = 34962
     
-    def __init__(self, buffer, byte_offset, target, name=None):
+    def __init__(self, buffer, byte_offset, target=None, name=None):
         super(BufferView, self).__init__(name=name)
         self.index = len(BufferView.instances)
         BufferView.instances.append(self)
@@ -493,8 +579,10 @@ class BufferView(ExportItem):
           "buffer" : self.buffer.index,
           "byteOffset" : self.byte_offset,
           "byteLength" : self.byte_length,
-          "target" : self.target
         }
+        if self.target:
+            buffer_view_def['target'] = self.target
+            
         return buffer_view_def
     
 class Accessor(ExportItem):
@@ -570,28 +658,4 @@ def getBoundingBox():
     min = boundingBox.min()
     max = boundingBox.max()
 
-def validate():
-    offset = output["bufferViews"][0]["byteOffset"]
-    length = output["bufferViews"][0]["byteLength"]
-    stream = output["buffers"][0]["uri"].split("data:application/octet-stream;base64,")[-1]
-    byteStr = base64.b64decode(stream)
-    byteStr = byteStr[offset:length]
-    ints = []
-    for i in range(0, len(byteStr), 2):
-        ints.append(struct.unpack("<H", byteStr[i:i+2])[0])
-        ints[len(ints)-1]
-    print len(ints)
-    print ints
-    
-    offset = output["bufferViews"][1]["byteOffset"]
-    length = output["bufferViews"][1]["byteLength"]
-    stream = output["buffers"][0]["uri"].split("data:application/octet-stream;base64,")[-1]
-    byteStr = base64.b64decode(stream)
-    byteStr = byteStr[offset:offset+length]
-    points = []
-    for i in range(0, len(byteStr), 12):
-        points.append(struct.unpack("<fff", byteStr[i:i+12]))
-        
-    print len(points)
-    print points
     
