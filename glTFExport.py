@@ -8,42 +8,77 @@ import maya.OpenMaya as OpenMaya
 import shutil
 import os
 
-class BinFormats(object):
+class ResourceFormats(object):
     EMBEDDED = 'embedded'
-    FLATTENED = 'flattened'
-    EXTERNAL = 'external'
-    GLB = 'glb'
+    SOURCE = 'source'
+    BIN = 'bin'
 
+class ClassPropertyDescriptor(object):
+
+    def __init__(self, fget):
+        self.fget = fget
+
+    def __get__(self, obj, klass=None):
+        if klass is None:
+            klass = type(obj)
+        return self.fget.__get__(obj, klass)()
+
+    def __set__(self, obj, value):
+        raise AttributeError("can't set attribute")
+
+def classproperty(func):
+    if not isinstance(func, (classmethod, staticmethod)):
+        func = classmethod(func)
+    return ClassPropertyDescriptor(func)
+        
+class ExportSettings(object):
+    file_format = 'gltf'
+    resource_format = 'bin'
+    out_file = ''
+    out_basename = ''
+    _out_dir = ''
+    _out_basename = ''
+    
+    @classproperty
+    def out_bin(cls):
+        return cls.out_basename + '.bin'
+    
+    @classproperty    
+    def out_basename(cls):
+        if cls._out_basename:
+            return cls._out_basename
+        base, ext = os.path.splitext(cls.out_file)
+        cls._out_basename = os.path.basename(base)
+        return cls._out_basename
+        
+    @classproperty
+    def out_dir(cls):
+        if cls._out_dir:
+            return cls._out_dir
+        cls._out_dir = os.path.dirname(cls.out_file)
+        return cls._out_dir
+    
+    
 class GLTFExporter(object):
     # TODO: Add VFlip option
-    def __init__(self, file_path, type='gltf', bin_format='flattened'):
+    def __init__(self, file_path, resource_format='bin'):
         self.output = {
             "asset": { 
                 "version": "2.0", 
                 "generator": "maya-glTFExport", 
             }
         }
-        self.output_file = file_path
-        
-        self.type = type
-        self.bin_format = bin_format
+        ExportSettings.out_file = file_path
+        ExportSettings.resource_format = resource_format
         
     def run(self):
-        if not self.output_file:
-            self.output_file = maya.cmds.fileDialog2(caption="Specify a name for the file to export.",
+        if not ExportSettings.out_file:
+            ExportSettings.out_file = maya.cmds.fileDialog2(caption="Specify a name for the file to export.",
                                                         fileMode=0)[0]
-        basename, ext = os.path.splitext(self.output_file)
-        if self.type == 'glb':
-            self.output_file = basename + '.glb'
-        else:
-            self.output_file = basename + '.gltf'
-        self.output_dir = os.path.dirname(self.output_file)
-        Image.output_dir = self.output_dir
-        Image.format = self.bin_format
-        Buffer.format = self.bin_format
-        if self.bin_format == BinFormats.EXTERNAL:
-            Buffer.uri = Image.uri = os.path.basename(basename) + '.bin'
-
+        basename, ext = os.path.splitext(ExportSettings.out_file)
+        if not ext in ['.glb', '.gltf']:
+            raise Exception("Output file must have gltf or glb extension.")
+        ExportSettings.file_format = ext[1:]  
     
         # TODO: validate file_path and type
         scene = Scene()
@@ -71,7 +106,7 @@ class GLTFExporter(object):
         if Accessor.instances:
             self.output['accessors'] = Accessor.instances
             
-        if self.type == 'glb':
+        if ExportSettings.file_format == 'glb':
             
             json_str = json.dumps(self.output, sort_keys=True, separators=(',', ':'), cls=GLTFEncoder)
             json_bin = bytearray(json_str.encode(encoding='UTF-8'))
@@ -95,22 +130,20 @@ class GLTFExporter(object):
             bin_out.extend(struct.pack('<I', 0x004E4942)) # BIN in binary
             bin_out += buffer.byte_str
             
-            with open(self.output_file, 'wb') as outfile:
+            with open(ExportSettings.out_file, 'wb') as outfile:
                 outfile.write(bin_out)
         else:
             #TODO: makedirs
-            with open(self.output_file, 'w') as outfile:
+            with open(ExportSettings.out_file, 'w') as outfile:
                 json.dump(self.output, outfile, cls=GLTFEncoder)
             
-            if self.bin_format == BinFormats.EXTERNAL:
+            if ExportSettings.resource_format == ResourceFormats.BIN:
                 buffer = Buffer.instances[0]
-                print buffer.uri
-                print self.output_dir
-                with open(self.output_dir + "/" + buffer.uri, 'wb') as outfile:
+                with open(ExportSettings.out_dir + "/" + buffer.uri, 'wb') as outfile:
                     outfile.write(buffer.byte_str)
         
-def export(file_path=None, type='glb', bin_format='glb', selection=False):
-    GLTFExporter(file_path, type, bin_format).run()
+def export(file_path=None, resource_format='bin', selection=False):
+    GLTFExporter(file_path, resource_format).run()
     
         
 class GLTFEncoder(json.JSONEncoder):
@@ -464,8 +497,6 @@ class OrthographicCamera(Camera):
 class Image(ExportItem):
     '''Needs to be added to images list and it's texture'''
     instances = []
-    format = None
-    output_dir = ""
     name = None
     uri = None
     buffer_view = None
@@ -478,14 +509,16 @@ class Image(ExportItem):
         Image.instances.append(self)
         base, ext = os.path.splitext(file_path)
         self.mime_type = 'image/{}'.format(ext.lower()[1:])
-        if self.format == BinFormats.FLATTENED:
-            shutil.copy(file_path, self.output_dir)
+            
+        if ExportSettings.resource_format == ResourceFormats.SOURCE:
+            shutil.copy(file_path, ExportSettings.out_dir)
             self.uri = file_name
         else:
             with open(file_path, 'rb') as f:
                 img_bytes = f.read()
             
-            if self.format in [BinFormats.EXTERNAL, BinFormats.GLB]:
+            if (ExportSettings.resource_format == ResourceFormats.BIN
+                    or ExportSettings.file_format == 'glb'):
                 single_buffer = Buffer.instances[0]
                 buffer_end = len(single_buffer)
                 single_buffer.byte_str += img_bytes
@@ -495,8 +528,8 @@ class Image(ExportItem):
                 aligned_len = (len(img_bytes) + 3) & ~3
                 for i in range(aligned_len - len(img_bytes)):
                     single_buffer.byte_str += b' '
-        
-        if self.format == BinFormats.EMBEDDED:
+        if (ExportSettings.file_format == 'gltf' and
+                ExportSettings.resource_format == ResourceFormats.EMBEDDED):
             self.uri = "data:application/octet-stream;base64," + base64.b64encode(img_bytes)
     
     def to_json(self):
@@ -528,13 +561,15 @@ class Sampler(ExportItem):
 class Buffer(ExportItem):
     instances = []
     byte_str = ""
-    format = None
     uri = ''
 
     def __init__(self, name=None):
         super(Buffer, self).__init__(name=name)
         self.index = len(Buffer.instances)
         Buffer.instances.append(self)
+        if (ExportSettings.file_format == 'gltf'
+                and ExportSettings.resource_format == ResourceFormats.BIN):
+            self.uri = ExportSettings.out_bin
     
     def __len__(self):
         return len(self.byte_str)
@@ -551,9 +586,9 @@ class Buffer(ExportItem):
     
     def to_json(self):
         buffer_def = {"byteLength" : len(self)}
-        if self.uri and self.format == BinFormats.EXTERNAL:
+        if self.uri and ExportSettings.resource_format == ResourceFormats.BIN:
             buffer_def['uri'] = self.uri
-        elif self.format in [BinFormats.EMBEDDED, BinFormats.FLATTENED]:
+        elif ExportSettings.resource_format in [ResourceFormats.EMBEDDED, ResourceFormats.SOURCE]:
             buffer_def['uri'] = "data:application/octet-stream;base64," + base64.b64encode(self.byte_str)
         # no uri for GLB
         return buffer_def
