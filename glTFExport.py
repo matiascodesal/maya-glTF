@@ -173,11 +173,12 @@ class Scene(ExportItem):
         super(Scene, self).__init__(name=name)
         self.index = len(Scene.instances)
         Scene.instances.append(self)
+        anim = Animation('defaultAnimation')
         self.nodes = []
         self.maya_nodes = maya_nodes
         for transform in self.maya_nodes:
             if transform not in Camera.default_cameras:
-                self.nodes.append(Node(transform))
+                self.nodes.append(Node(transform, anim))
         
     def to_json(self):
         scene_def = {"name":self.name, "nodes":[node.index for node in self.nodes]}
@@ -191,7 +192,7 @@ class Node(ExportItem):
     camera = None
     mesh = None
 
-    def __init__(self, maya_node):
+    def __init__(self, maya_node, anim):
         self.maya_node = maya_node
         name = maya.cmds.ls(maya_node, shortNames=True)[0]
         super(Node, self).__init__(name=name)
@@ -200,6 +201,8 @@ class Node(ExportItem):
         self.children = []
         
         self.matrix = maya.cmds.xform(self.maya_node, query=True, matrix=True)
+        
+        self._get_animation(anim)
         maya_children = maya.cmds.listRelatives(self.maya_node, children=True, fullPath=True)
         if maya_children:
             for child in maya_children:
@@ -214,8 +217,48 @@ class Node(ExportItem):
                         cam = PerspectiveCamera(child)
                     self.camera = cam
                 elif childType == 'transform':
-                    node = Node(child)
+                    node = Node(child, anim)
                     self.children.append(node)
+    
+    def _get_animation(self, anim):
+        pass
+        '''
+        channel_map = {'translateX':'translation', 'translateY':'translation','translateZ':'translation',
+                        'rotateX':'rotation','rotateY':'rotation','rotateZ':'rotation'}
+        translation = {}
+        rotation = {}
+        scale = {}
+        if maya.cmds.keyframe(self.maya_node, query=True, keyframeCount=True):
+            for attr in channel_map.keys():
+                keyframes = maya.cmds.keyframe(self.maya_node, attribute=attr, query=True, timeChange=True)
+                if keyframes:
+                    for keyframe in keyframes:
+                        value = cmds.keyframe('pSphere1', attribute=attr, q=True, time=(keyframe,keyframe), valueChange=True)
+        
+        translation_keys = set()
+        tkeys = maya.cmds.keyframe(self.maya_node, attribute='translateX', query=True, timeChange=True)
+        if tkeys:
+            translation_keys += set(tkeys)
+        tkeys = maya.cmds.keyframe(self.maya_node, attribute='translateY', query=True, timeChange=True)
+        if tkeys:
+            translation_keys += set(tkeys)
+        tkeys = maya.cmds.keyframe(self.maya_node, attribute='translateZ', query=True, timeChange=True)
+        if tkeys:
+            translation_keys += set(tkeys)
+        for keyframe in translation_keys:
+            xyz = []
+            xyz.append(maya.cmds.getAttr(self.maya_node+'.translateX', time=keyframe))
+            xyz.append(maya.cmds.getAttr(self.maya_node+'.translateY', time=keyframe))
+            xyz.append(maya.cmds.getAttr(self.maya_node+'.translateZ', time=keyframe))
+            translation[keyframe] = xyz
+        if not len(Buffer.instances):
+            primary_buffer = Buffer('primary_buffer')
+        else:
+            primary_buffer = Buffer.instances[0]
+        self.indices_accessor = Accessor(indices, "SCALAR", 5126, 34963, primary_buffer, name=self.name + '_idx')
+        '''
+            
+                
     
     def to_json(self):
         node_def = {'matrix' : self.matrix}
@@ -384,42 +427,92 @@ class Material(ExportItem):
     metallic_factor = None
     roughness_factor = None
     transparency = None
+    default_material_id = None
+    supported_materials = ['lambert','phong','blinn','aiStandardSurface']
     
     def __new__(cls, maya_node):
-        name = maya.cmds.ls(maya_node, shortNames=True)[0]
-        matches = [mat for mat in Material.instances if mat.name == name]
-        if matches:
-            return matches[0]
+        if maya_node:
+            name = maya.cmds.ls(maya_node, shortNames=True)[0]
+            matches = [mat for mat in Material.instances if mat.name == name]
+            if matches:
+                return matches[0]
+            
+            maya_obj_type = maya.cmds.objectType(maya_node)
+            if maya_obj_type not in cls.supported_materials:
+                print "Shader {} is not a supported shader type: {}".format(maya_node, maya_obj_type)
+                return cls._get_default_material()
         
         return super(Material, cls).__new__(cls, maya_node)
         
     def __init__(self, maya_node):
         if hasattr(self, 'index'):
             return
+        
+        if maya_node is None:
+            self.base_color_factor = [0.5, 0.5, 0.5, 1]
+            self.metallic_factor = 0
+            self.roughness_factor = 1
+            name = 'glTFDefaultMaterial'
+            super(Material, self).__init__(name=name)
+            self.index = len(Material.instances)
+            self.__class__.default_material_id = self.index
+            Material.instances.append(self)
+            return
+             
         self.maya_node = maya_node
         name = maya.cmds.ls(maya_node, shortNames=True)[0]
         super(Material, self).__init__(name=name)
         
         self.index = len(Material.instances)
         Material.instances.append(self)
-       
-        color_conn = maya.cmds.listConnections(self.maya_node+'.color')
-        trans = list(maya.cmds.getAttr(self.maya_node+'.transparency')[0])
-        self.transparency = sum(trans) / float(len(trans))
-        if color_conn and maya.cmds.objectType(color_conn[0]) == 'file':
-            file_node = color_conn[0]
-            file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
-            image = Image(file_path)
-            self.base_color_texture = Texture(image)
+        
+        maya_obj_type = maya.cmds.objectType(maya_node)
+        if maya_obj_type in ['phong', 'lambert', 'blinn']:
+            color_conn = maya.cmds.listConnections(self.maya_node+'.color')
+            trans = list(maya.cmds.getAttr(self.maya_node+'.transparency')[0])
+            self.transparency = sum(trans) / float(len(trans))
+            if color_conn and maya.cmds.objectType(color_conn[0]) == 'file':
+                file_node = color_conn[0]
+                file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
+                image = Image(file_path)
+                self.base_color_texture = Texture(image)
+            else:
+                color = list(maya.cmds.getAttr(self.maya_node+'.color')[0])
+                color.append(1-self.transparency)
+                self.base_color_factor = color
+            
+            if maya_obj_type == 'lambert':
+                self.metallic_factor = 0
+                self.roughness_factor = 1
+            elif maya_obj_type == 'blinn':
+                self.metallic_factor = maya.cmds.getAttr(self.maya_node+'.specularRollOff')
+                self.roughness_factor = maya.cmds.getAttr(self.maya_node+'.eccentricity') 
+            elif maya_obj_type == 'phong':
+                self.metallic_factor = 1
+                self.roughness_factor = 1 - min(1, maya.cmds.getAttr(self.maya_node+'.cosinePower') / 2000)
+        elif maya_obj_type == 'aiStandardSurface':
+            color_conn = maya.cmds.listConnections(self.maya_node+'.baseColor')
+            if color_conn and maya.cmds.objectType(color_conn[0]) == 'file':
+                file_node = color_conn[0]
+                file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
+                image = Image(file_path)
+                self.base_color_texture = Texture(image)
+            else:
+                color = list(maya.cmds.getAttr(self.maya_node+'.baseColor')[0])
+                self.base_color_factor = color
+                opacity = list(maya.cmds.getAttr(self.maya_node+'.opacity')[0])
+                opacity = sum(opacity) / float(len(opacity))
+                self.base_color_factor.append(opacity)
+            self.metallic_factor = maya.cmds.getAttr(self.maya_node+'.metalness')]
+            self.roughness_factor = maya.cmds.getAttr(self.maya_node+'.specularRoughness')
+    
+    @classmethod
+    def _get_default_material(cls):
+        if cls.default_material_id:
+            return Material.instances[cls.default_material_id]
         else:
-            color = list(maya.cmds.getAttr(self.maya_node+'.color')[0])
-            color.append(1-self.transparency)
-            self.base_color_factor = color
-        
-        self.metallic_factor = 0
-        self.roughness_factor = 0
-        
-
+            return Material(None)
+    
     def to_json(self):
         pbr = {}
         mat_def = {'pbrMetallicRoughness': pbr}
@@ -493,7 +586,46 @@ class OrthographicCamera(Camera):
         camera_def[self.type]['ymag'] = self.ymag
         return camera_def
     
+    
+class Animation(ExportItem):
+    instances = []
+    channels = None
+    samplers = None
+    
+    def __init__(name=''):
+        super(Animation, self).__init__(name)
+        self.instances.append(self)
+    
+    def to_json(self):
+        anim_def = {'channels': self.channels, 'samplers': self.samplers}
+        return anim_def
+        
+    
+class AnimationChannels(ExportItem):
+    node = None
+    path = None
+    sampler = None
+    
+    def to_json(self):
+        channel_def = {'target':{}, 'sampler': self.sampler.index}
+        channel_def['target']['node'] = self.node.index
+        channel_def['target']['path'] = self.path
+        return anim_def
+        
 
+class AnimationSamplers(ExportItem):
+    input_accessor = None
+    output_accessor = None
+    interpolation = None
+    
+    def to_json(self):
+        sampler_def = {'input':self.input_accessor.index, 
+                        'output':self.output_accessor.index,
+                        'interpolation':self.interpolation}
+        return sampler_def
+        
+    
+# TODO: check to see if the image has been used
 class Image(ExportItem):
     '''Needs to be added to images list and it's texture'''
     instances = []

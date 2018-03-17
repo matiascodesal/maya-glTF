@@ -26,18 +26,22 @@ glTFExport.export(r"C:\Temp\test.gltf", type='gltf', bin_format='flattened')
 
 ### Current Features
 - Export whole scene from Maya
-- Exports transform nodes and mesh with hierarchy
-- Exports single shader per mesh (glTF spec).
+- Exports transform nodes and meshes with hierarchy
+- Exports single material shader per mesh (glTF spec).
    - Picks the first shader.
-   - Exports shader color attribute.  Textures are WIP and may conflict.
-   - Metallic and Roughness hard-coded
+- Lambert, Blinn, Phong use a PBR conversion approximation
+   - Base color comes from color attribute as texture or value.
+   - Metallic and roughness are derived from the other attribute values and do not support textures.
+- Recommend aiStandardSurface shader for best material conversion.
+   - Textures not supported for metallicRoughness
 - glTF and glb supported
 - Options for embedded binary data, single external bin, or preserved external images.
    
 ### TODO
 - Continue implementing the rest of glTF spec
 - Add export_selected
-- lambert, phong, etc conversion to pbr
-- Add support for more map types appart from diffuse
+- Convert arnold metalness maps and roughness maps to metallicRoughness maps.
+- Support aiStandardSurface normal maps
+- Support aiStandardSurface emission
 - Simplify export options
 - Write tests
