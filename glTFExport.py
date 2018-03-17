@@ -99,6 +99,8 @@ class GLTFExporter(object):
             self.output['images'] = Image.instances
         if Texture.instances:
             self.output['textures'] = Texture.instances
+        if Animation.instances:
+            self.output['animations'] = Animation.instances
         if Buffer.instances:
             self.output['buffers'] = Buffer.instances
         if BufferView.instances:
@@ -189,6 +191,9 @@ class Node(ExportItem):
     instances = []
     maya_node = None
     matrix = None
+    translation = None
+    rotation = None
+    scale = None
     camera = None
     mesh = None
 
@@ -200,8 +205,10 @@ class Node(ExportItem):
         Node.instances.append(self)
         self.children = []
         
-        self.matrix = maya.cmds.xform(self.maya_node, query=True, matrix=True)
-        
+        #self.matrix = maya.cmds.xform(self.maya_node, query=True, matrix=True)
+        self.translation = maya.cmds.getAttr(self.maya_node+'.translate')[0]
+        self.rotation = self._get_rotation_quaternion()
+        self.scale = maya.cmds.getAttr(self.maya_node+'.scale')[0]
         self._get_animation(anim)
         maya_children = maya.cmds.listRelatives(self.maya_node, children=True, fullPath=True)
         if maya_children:
@@ -221,47 +228,51 @@ class Node(ExportItem):
                     self.children.append(node)
     
     def _get_animation(self, anim):
-        pass
-        '''
-        channel_map = {'translateX':'translation', 'translateY':'translation','translateZ':'translation',
-                        'rotateX':'rotation','rotateY':'rotation','rotateZ':'rotation'}
-        translation = {}
-        rotation = {}
-        scale = {}
-        if maya.cmds.keyframe(self.maya_node, query=True, keyframeCount=True):
-            for attr in channel_map.keys():
-                keyframes = maya.cmds.keyframe(self.maya_node, attribute=attr, query=True, timeChange=True)
-                if keyframes:
-                    for keyframe in keyframes:
-                        value = cmds.keyframe('pSphere1', attribute=attr, q=True, time=(keyframe,keyframe), valueChange=True)
+        if maya.cmds.keyframe(self.maya_node, attribute='translate', query=True, keyframeCount=True):
+            translation_channel = AnimationChannel(self, 'translation')
+            anim.add_channel(translation_channel)
+            anim.add_sampler(translation_channel.sampler)
+        if maya.cmds.keyframe(self.maya_node, attribute='rotate', query=True, keyframeCount=True):
+            rotation_channel = AnimationChannel(self, 'rotation')
+            anim.add_channel(rotation_channel)
+            anim.add_sampler(rotation_channel.sampler)
+        if maya.cmds.keyframe(self.maya_node, attribute='scale', query=True, keyframeCount=True):
+            scale_channel = AnimationChannel(self, 'scale')
+            anim.add_channel(scale_channel)
+            anim.add_sampler(scale_channel.sampler)
         
-        translation_keys = set()
-        tkeys = maya.cmds.keyframe(self.maya_node, attribute='translateX', query=True, timeChange=True)
-        if tkeys:
-            translation_keys += set(tkeys)
-        tkeys = maya.cmds.keyframe(self.maya_node, attribute='translateY', query=True, timeChange=True)
-        if tkeys:
-            translation_keys += set(tkeys)
-        tkeys = maya.cmds.keyframe(self.maya_node, attribute='translateZ', query=True, timeChange=True)
-        if tkeys:
-            translation_keys += set(tkeys)
-        for keyframe in translation_keys:
-            xyz = []
-            xyz.append(maya.cmds.getAttr(self.maya_node+'.translateX', time=keyframe))
-            xyz.append(maya.cmds.getAttr(self.maya_node+'.translateY', time=keyframe))
-            xyz.append(maya.cmds.getAttr(self.maya_node+'.translateZ', time=keyframe))
-            translation[keyframe] = xyz
-        if not len(Buffer.instances):
-            primary_buffer = Buffer('primary_buffer')
-        else:
-            primary_buffer = Buffer.instances[0]
-        self.indices_accessor = Accessor(indices, "SCALAR", 5126, 34963, primary_buffer, name=self.name + '_idx')
-        '''
-            
-                
+    def _get_rotation_quaternion(self):
+        obj=OpenMaya.MObject()
+        #make a object of type MSelectionList
+        sel_list=OpenMaya.MSelectionList()
+        #add something to it
+        #you could retrieve this form function or the user selection
+        sel_list.add(self.maya_node)
+        #fill in the MObject
+        sel_list.getDependNode(0,obj)
+        #check if its a transform
+        if (obj.hasFn(OpenMaya.MFn.kTransform)):
+            quat = OpenMaya.MQuaternion()
+            #then we can add it to transfrom Fn
+            #Fn is basically the collection of functions for given objects
+            xform=OpenMaya.MFnTransform(obj)
+            xform.getRotation(quat)
+            # glTF requires normalize quat
+            quat.normalizeIt()
+        
+        py_quat = [quat[x] for x in range(4)]
+        return py_quat       
     
     def to_json(self):
-        node_def = {'matrix' : self.matrix}
+        node_def = {}
+        if self.matrix:
+            node_def['matrix'] = self.matrix
+        if self.translation:
+            node_def['translation'] = self.translation
+        if self.rotation:
+            node_def['rotation'] = self.rotation
+        if self.scale:
+            node_def['scale'] = self.scale
         if self.children:
             node_def['children'] = [child.index for child in self.children]
         if self.mesh:
@@ -503,7 +514,7 @@ class Material(ExportItem):
                 opacity = list(maya.cmds.getAttr(self.maya_node+'.opacity')[0])
                 opacity = sum(opacity) / float(len(opacity))
                 self.base_color_factor.append(opacity)
-            self.metallic_factor = maya.cmds.getAttr(self.maya_node+'.metalness')]
+            self.metallic_factor = maya.cmds.getAttr(self.maya_node+'.metalness')
             self.roughness_factor = maya.cmds.getAttr(self.maya_node+'.specularRoughness')
     
     @classmethod
@@ -592,32 +603,102 @@ class Animation(ExportItem):
     channels = None
     samplers = None
     
-    def __init__(name=''):
+    def __init__(self, name=''):
         super(Animation, self).__init__(name)
         self.instances.append(self)
+        self.channels = []
+        self.samplers = []
     
+    def add_channel(self, channel):
+        channel.index = len(self.channels)
+        self.channels.append(channel)
+    
+    def add_sampler(self, sampler):
+        sampler.index = len(self.samplers)
+        self.samplers.append(sampler)
+        
     def to_json(self):
         anim_def = {'channels': self.channels, 'samplers': self.samplers}
         return anim_def
         
     
-class AnimationChannels(ExportItem):
+class AnimationChannel(ExportItem):
+    maya_node = None
     node = None
     path = None
     sampler = None
+    
+    def __init__(self, node, path):
+        self.maya_node = node.maya_node
+        self.node = node
+        self.path = path
+        name = maya.cmds.ls(self.maya_node, shortNames=True)[0]
+        name = '{}_{}_channel'.format(name, path)
+        super(AnimationChannel, self).__init__(name)
+        self.sampler = AnimationSampler(self)
+            
     
     def to_json(self):
         channel_def = {'target':{}, 'sampler': self.sampler.index}
         channel_def['target']['node'] = self.node.index
         channel_def['target']['path'] = self.path
-        return anim_def
+        return channel_def
         
 
-class AnimationSamplers(ExportItem):
+class AnimationSampler(ExportItem):
     input_accessor = None
     output_accessor = None
     interpolation = None
+    attr_map = {'translation':'translate', 'rotation':'rotate', 'scale':'scale'}
+    interp_map = {'spline':'CUBICSPLINE','linear':'LINEAR',
+                    'auto':'LINEAR','fast':'CUBICSPLINE',
+                    'slow':'CUBICSPLINE','step':'STEP',
+                    'stepnext':'STEP','fixed':'CUBICSPLINE',
+                    'clamped':'CUBICSPLINE', 'plateau':'CUBICSPLINE'}
+    time_map = {'game':15.0,'film':24.0,'pal':25.0,'ntsc':30.0,'show':48.0,'palf':50.0,'ntscf':60.0}
     
+    def __init__(self, anim_channel):
+        node = anim_channel.node
+        path = anim_channel.path
+        name = '{}_{}_sampler'.format(node, path)
+        super(AnimationSampler, self).__init__(name)
+        
+        keyframes = maya.cmds.keyframe(node.maya_node, attribute=self.attr_map[path], query=True, timeChange=True)
+        keyframes = sorted(list(set(keyframes)))
+        self.interpolation = self._get_interpolation(node.maya_node, path, keyframes[0])
+        
+        values = []
+        if path in ['translation', 'scale']:
+            for keyframe in keyframes:
+                # Use get attr at a time because not every attr might have a keyframe
+                values.append(maya.cmds.getAttr(node.maya_node+'.'+self.attr_map[path], time=keyframe)[0])
+        else:
+            for keyframe in keyframes:
+                maya.cmds.currentTime(keyframe, edit=True)
+                values.append(node._get_rotation_quaternion())
+        if not len(Buffer.instances):
+            primary_buffer = Buffer('primary_buffer')
+        else:
+            primary_buffer = Buffer.instances[0]
+        print keyframes
+        print values
+        time_unit = maya.cmds.currentUnit(query=True, time=True)
+        fps = self.time_map[time_unit]
+        keyframes = [key/fps for key in keyframes]
+        self.input_accessor = Accessor(keyframes, "SCALAR", 5126, None, primary_buffer, name=self.name + '_tTime')
+        self.input_accessor.min = [keyframes[0]]
+        self.input_accessor.max = [keyframes[-1]]
+        if path in ['translation', 'scale']:
+            self.output_accessor = Accessor(values, "VEC3", 5126, None, primary_buffer, name=self.name + '_tVal')
+        else:
+            self.output_accessor = Accessor(values, "VEC4", 5126, None, primary_buffer, name=self.name + '_tVal')
+        
+    def _get_interpolation(self, node, path, first_key):
+        for axis in ['X','Y','Z']:   
+            out_tangent = maya.cmds.keyTangent(node, attribute=self.attr_map[path]+axis, time=(first_key,first_key), query=True, outTangentType=True)
+            if out_tangent:
+                return self.interp_map[out_tangent[0]]
+            
     def to_json(self):
         sampler_def = {'input':self.input_accessor.index, 
                         'output':self.output_accessor.index,
@@ -730,7 +811,7 @@ class BufferView(ExportItem):
     buffer = None
     byte_offset = None
     byte_length = None
-    target = 34962
+    target = None
     
     def __init__(self, buffer, byte_offset, target=None, name=None):
         super(BufferView, self).__init__(name=name)
@@ -762,7 +843,7 @@ class Accessor(ExportItem):
     src_data = None
     max  = None
     min = None
-    type_codes = {"SCALAR":1,"VEC2":2,"VEC3":3}
+    type_codes = {"SCALAR":1,"VEC2":2,"VEC3":3,"VEC4":4}
     component_type_codes = {5123:"H",5126:"f"}
     
     def __init__(self, data, type, component_type, target, buffer, name=None):
