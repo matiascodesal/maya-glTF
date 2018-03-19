@@ -27,12 +27,14 @@ This plugin is compatible with every version of Maya.  Tested with 2015+.  Most 
 ### Exporting through the File menu
 1. Launch Maya.
 1. Open the Plug-in Manager
-   - image
+   - ![Plug-in Manager 1](https://github.com/matiascodesal/maya-glTF/blob/master/doc/images/find-plug-man.PNG)
 1. Check on "Loaded" for "glTFTranslator.py" plug-in.
+   - ![Plug-in Manager 2](https://github.com/matiascodesal/maya-glTF/blob/master/doc/images/plug-in-man.PNG)
 1. Export your scene: File->Export All...
    - File->Export Selection... not currently supported.
 1. Choose "glTF Export" for the "Files of Type" option.
-1. Optionally, set any file-specific options as well.
+1. Optionally, set any file type specific options as well.
+   - ![File options](https://github.com/matiascodesal/maya-glTF/blob/master/doc/images/file-type-opts.PNG)
 
 
 ### Exporting as a part of a script
