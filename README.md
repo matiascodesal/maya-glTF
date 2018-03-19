@@ -1,7 +1,7 @@
 # maya-glTF
 glTF exporter plugin for Autodesk Maya
 
-This plugin is compatible with every version of Maya.  Tested with 2015+.  Most of the glTF spec has been implemented, but this is still a work in progress.  There are a couple of features still missing and some material translations that need to be tuned.  Report any issues ![here](https://github.com/matiascodesal/maya-glTF/issues)!
+This plugin is compatible with every version of Maya.  Tested with 2015+.  Most of the glTF spec has been implemented, but this is still a work in progress.  There are a couple of features still missing and some material translations that need to be tuned.  Report any issues [here](https://github.com/matiascodesal/maya-glTF/issues)!
 
 ![Pig Export](https://github.com/matiascodesal/maya-glTF/blob/master/doc/images/pig-export.png)
 Model credit: https://sketchfab.com/KulerRuler
