@@ -879,6 +879,10 @@ class Buffer(ExportItem):
             else:
                 packed_data.append(struct.pack(pack_type, item))
         self.byte_str += b''.join(packed_data)
+        # 4-byte-aligned
+        aligned_len = (len(self.byte_str) + 3) & ~3
+        for i in range(aligned_len - len(self.byte_str)):
+            self.byte_str += b' '
     
     def to_json(self):
         buffer_def = {"byteLength" : len(self)}
