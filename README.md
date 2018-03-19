@@ -23,20 +23,24 @@ This plugin is compatible with every version of Maya.  Tested with 2015+.  Most 
 (Linux)   | `$MAYA_APP_DIR/maya/<version>/plug-ins`  
 
 ## Usage
+
+### Exporting through the File menu
 1. Launch Maya.
 1. Open the Plug-in Manager
    - image
 1. Check on "Loaded" for "glTFTranslator.py" plug-in.
 1. Export your scene: File->Export All...
    - File->Export Selection... not currently supported.
+1. Choose "glTF Export" for the "Files of Type" option.
+1. Optionally, set any file-specific options as well.
 
 
-If you want to export glTF as a part of a script:
+### Exporting as a part of a script
 ```python
 import glTFExport   
 glTFExport.export(r"C:\Temp\test.glb", resource_format='bin', anim='keyed', vflip=True)
 ```
-Export parameters:
+#### Export parameters
 
 | Parameter | Description |   
 | --------- | ----------- |   
