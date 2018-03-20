@@ -7,8 +7,22 @@ import math
 import maya.cmds
 import maya.OpenMaya as OpenMaya
 import shutil
+import time
 
 # TODO don't export hidden nodes?
+
+def timeit(method):
+
+    def timed(*args, **kw):
+        ts = time.time()
+        result = method(*args, **kw)
+        te = time.time()
+
+        print '%r (%r, %r) %2.2f sec' % \
+              (method.__name__, args, kw, te-ts)
+        return result
+
+    return timed
 
 class ResourceFormats(object):
     EMBEDDED = 'embedded'
@@ -142,6 +156,7 @@ class GLTFExporter(object):
         
         if not os.path.exists(ExportSettings.out_dir):
             os.makedirs(ExportSettings.out_dir)
+        
         if ExportSettings.file_format == 'glb':
             
             json_str = json.dumps(self.output, sort_keys=True, separators=(',', ':'), cls=GLTFEncoder)
@@ -256,7 +271,6 @@ class Node(ExportItem):
         self.index = len(Node.instances)
         Node.instances.append(self)
         self.children = []
-        
         #self.matrix = maya.cmds.xform(self.maya_node, query=True, matrix=True)
         self.translation = maya.cmds.getAttr(self.maya_node+'.translate')[0]
         self.rotation = self._get_rotation_quaternion()
@@ -378,7 +392,8 @@ class Mesh(ExportItem):
         # glTF only allows one materical per mesh, so we'll just grab the first one.
         shader = maya.cmds.ls(maya.cmds.listConnections(shadingGrps),materials=True)[0]
         self.material = Material(shader)
-        
+    
+    @timeit
     def _getMeshData(self):
         maya.cmds.select(self.maya_node)
         selList = OpenMaya.MSelectionList()
@@ -397,6 +412,7 @@ class Mesh(ExportItem):
         all_colors = [None]*meshFn.numVertices()
         uvs = [None]*meshFn.numVertices()
         ids = OpenMaya.MIntArray()
+        tracker = {}
         points = OpenMaya.MPointArray()
         if do_color:
             vertexColorList = OpenMaya.MColorArray()
@@ -434,21 +450,22 @@ class Mesh(ExportItem):
                 if ExportSettings.vflip:
                     v = int(v) + (1 - (v % 1))
                 uv = (u, v)
+                # using a string IDs + dictionary for quick
+                # tracking of pos/norm/uv combo's that we've seen.
+                comp_str = '{},{},{}:{},{},{}:{},{}'.format(pos[0], pos[1], pos[2], norm[0], norm[1], norm[2], uv[0], uv[1])
                 if not positions[ids[x]]:   
                     positions[ids[x]] = pos
                     normals[ids[x]] = norm
-                    uvs[ids[x]] = uv              
+                    uvs[ids[x]] = uv
+                    tracker[comp_str] = ids[x]
                 elif not ( positions[ids[x]] == pos and
                             normals[ids[x]] == norm and
                             uvs[ids[x]] == uv):
                     matched = False
-                    for i in range(0, len(positions)):
-                        if ( positions[i] == pos and
-                            normals[i] == norm and
-                            uvs[i] == uv):
-                            matched = True
-                            indices[-1] = i
-                            break
+                    if (hasattr(tracker, comp_str)):
+                        matched = True
+                        indices[-1] = tracker[comp_str]
+                        break
                     if not matched:
                         positions.append(pos)
                         normals.append(norm)
@@ -477,7 +494,12 @@ class Mesh(ExportItem):
             primary_buffer = Buffer('primary_buffer')
         else:
             primary_buffer = Buffer.instances[0]
-        self.indices_accessor = Accessor(indices, "SCALAR", 5123, 34963, primary_buffer, name=self.name + '_idx')
+        
+        if len(positions) >= 0xffff:
+            idx_component_type = 5125
+        else:
+            idx_component_type = 5123
+        self.indices_accessor = Accessor(indices, "SCALAR", idx_component_type, 34963, primary_buffer, name=self.name + '_idx')
         self.indices_accessor.min = [0]
         self.indices_accessor.max = [len(positions) - 1]
         self.position_accessor = Accessor(positions, "VEC3", 5126, 34962, primary_buffer, name=self.name + '_pos')
@@ -795,7 +817,10 @@ class Image(ExportItem):
         self.index = len(Image.instances)
         Image.instances.append(self)
         base, ext = os.path.splitext(file_path)
-        self.mime_type = 'image/{}'.format(ext.lower()[1:])
+        mime_suffix = ext.lower()[1:]
+        if mime_suffix == 'jpg':
+            mime_suffix = 'jpeg'
+        self.mime_type = 'image/{}'.format(mime_suffix)
             
         if ExportSettings.resource_format == ResourceFormats.SOURCE:
             shutil.copy(file_path, ExportSettings.out_dir)
@@ -935,7 +960,10 @@ class Accessor(ExportItem):
     max  = None
     min = None
     type_codes = {"SCALAR":1,"VEC2":2,"VEC3":3,"VEC4":4}
-    component_type_codes = {5123:"H",5126:"f"}
+    component_type_codes = {5123:"H", # unsigned short
+                            5125:"I", # unsigned int
+                            5126:"f"  # float
+                           }
     
     @classmethod
     def set_defaults(cls):
