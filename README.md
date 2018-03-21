@@ -3,7 +3,7 @@ glTF exporter plugin for Autodesk Maya
 
 This plugin is compatible with most modern versions of Maya.  Tested with Maya 2015+.  Most of the glTF spec has been implemented, but this is still a work in progress.  For best material results use StingrayPBS shader.  Report any issues [here](https://github.com/matiascodesal/maya-glTF/issues)!
 
-![Water Bottle Export](https://github.com/matiascodesal/maya-glTF/blob/master/doc/images/water-bottle.PNG)  
+![Water Bottle Export](https://github.com/matiascodesal/maya-glTF/blob/master/doc/images/water-bottle.png)  
 
 ## Installation
 1. Download the ZIP file using the green button at the top of this page.  
