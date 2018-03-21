@@ -1,10 +1,9 @@
 # maya-glTF
 glTF exporter plugin for Autodesk Maya
 
-This plugin is compatible with every version of Maya.  Tested with 2015+.  Most of the glTF spec has been implemented, but this is still a work in progress.  There are a couple of features still missing and some material translations that need to be tuned.  Report any issues [here](https://github.com/matiascodesal/maya-glTF/issues)!
+This plugin is compatible with most modern versions of Maya.  Tested with Maya 2015+.  Most of the glTF spec has been implemented, but this is still a work in progress.  For best material results use StingrayPBS shader.  Report any issues [here](https://github.com/matiascodesal/maya-glTF/issues)!
 
-![Car Export](https://github.com/matiascodesal/maya-glTF/blob/master/doc/images/car.PNG)  
-Model credit: https://sketchfab.com/topfrank2013
+![Water Bottle Export](https://github.com/matiascodesal/maya-glTF/blob/master/doc/images/water-bottle.PNG)  
 
 ## Installation
 1. Download the ZIP file using the green button at the top of this page.  
@@ -62,8 +61,7 @@ glTFExport.export(r"C:\Temp\test.glb", resource_format='bin', anim='keyed', vfli
 - Lambert, Blinn, Phong use a PBR conversion approximation
    - Base color comes from color attribute as texture or value.
    - Metallic and roughness are derived from the other attribute values and do not support textures.
-- Recommend aiStandardSurface shader for best material conversion.
-   - Textures not supported for metallicRoughness
+- Recommend StingrayPBS shader for best material conversion.
 - Node animation supported for translation, rotation, scale.
 - glTF and glb supported
 - Options for embedded binary data, single external bin, or preserved external images.
@@ -71,8 +69,6 @@ glTFExport.export(r"C:\Temp\test.glb", resource_format='bin', anim='keyed', vfli
 ## TODO
 - Implement skinning
 - Implement blendshapes
+- Add option to bake keys on export.
 - Add Export Selection... function.
-- Convert arnold metalness maps and roughness maps to metallicRoughness maps.
-- Support aiStandardSurface normal maps
-- Support aiStandardSurface emission
 - Write tests

@@ -8,6 +8,10 @@ import maya.cmds
 import maya.OpenMaya as OpenMaya
 import shutil
 import time
+try:
+    from PySide.QtGui import QImage, QColor, qRed, qGreen, qBlue, QImageWriter
+except ImportError:
+    from PySide2.QtGui import QImage, QColor, qRed, qGreen, qBlue, QImageWriter
 
 # TODO don't export hidden nodes?
 
@@ -123,6 +127,9 @@ class GLTFExporter(object):
             raise Exception("Output file must have gltf or glb extension.")
         ExportSettings.file_format = ext[1:]  
         
+        if not os.path.exists(ExportSettings.out_dir):
+            os.makedirs(ExportSettings.out_dir)
+        
         # TODO: validate file_path and type
         scene = Scene()
         # we only support exporting single scenes, 
@@ -153,9 +160,6 @@ class GLTFExporter(object):
         
         if not Scene.instances[0].nodes:
             raise RuntimeError('Scene is empty.  No file will be exported.')
-        
-        if not os.path.exists(ExportSettings.out_dir):
-            os.makedirs(ExportSettings.out_dir)
         
         if ExportSettings.file_format == 'glb':
             
@@ -517,9 +521,14 @@ class Material(ExportItem):
     base_color_texture = None
     metallic_factor = None
     roughness_factor = None
+    metallic_roughness_texture = None
+    normal_texture = None
+    occlusion_texture = None
+    emissive_factor = None
+    emissive_texture = None
     transparency = None
     default_material_id = None
-    supported_materials = ['lambert','phong','blinn','aiStandardSurface']
+    supported_materials = ['lambert','phong','blinn','aiStandardSurface', 'StingrayPBS']
     
     @classmethod
     def set_defaults(cls):
@@ -601,6 +610,94 @@ class Material(ExportItem):
                 self.base_color_factor.append(opacity)
             self.metallic_factor = maya.cmds.getAttr(self.maya_node+'.metalness')
             self.roughness_factor = maya.cmds.getAttr(self.maya_node+'.specularRoughness')
+        elif maya_obj_type == 'StingrayPBS':
+            color_conn = maya.cmds.listConnections(self.maya_node+'.TEX_color_map')
+            if (color_conn and maya.cmds.objectType(color_conn[0]) == 'file'
+                    and maya.cmds.getAttr(self.maya_node+'.use_color_map')):
+                file_node = color_conn[0]
+                file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
+                image = Image(file_path)
+                self.base_color_texture = Texture(image)
+            else:
+                color = list(maya.cmds.getAttr(self.maya_node+'.base_color')[0])
+                self.base_color_factor = color
+                self.base_color_factor.append(1) # opacity
+            
+            metallic_conn = maya.cmds.listConnections(self.maya_node+'.TEX_metallic_map')
+            roughness_conn = maya.cmds.listConnections(self.maya_node+'.TEX_roughness_map')
+            if (metallic_conn and maya.cmds.objectType(metallic_conn[0]) == 'file'
+                    and maya.cmds.getAttr(self.maya_node+'.use_metallic_map')
+                    and roughness_conn and maya.cmds.objectType(roughness_conn[0]) == 'file'
+                    and maya.cmds.getAttr(self.maya_node+'.use_roughness_map')):
+                metallic_file_node = metallic_conn[0]
+                metallic_file_path = maya.cmds.getAttr(metallic_file_node+'.fileTextureName')
+                roughness_file_node = roughness_conn[0]
+                roughness_file_path = maya.cmds.getAttr(roughness_file_node+'.fileTextureName')
+                metalrough_file_path, metalrough_qimage = self._create_metallic_roughness_map(metallic_file_path, roughness_file_path)
+                image = Image(metalrough_file_path, metalrough_qimage)
+                self.metallic_roughness_texture = Texture(image)
+            else:
+                self.metallic_factor = maya.cmds.getAttr(self.maya_node+'.metallic')
+                self.roughness_factor = maya.cmds.getAttr(self.maya_node+'.roughness')
+                
+            normal_conn = maya.cmds.listConnections(self.maya_node+'.TEX_normal_map')
+            if (normal_conn and maya.cmds.objectType(normal_conn[0]) == 'file'
+                    and maya.cmds.getAttr(self.maya_node+'.use_normal_map')):
+                file_node = normal_conn[0]
+                file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
+                image = Image(file_path)
+                self.normal_texture = Texture(image)
+                
+            ao_conn = maya.cmds.listConnections(self.maya_node+'.TEX_ao_map')
+            if (ao_conn and maya.cmds.objectType(ao_conn[0]) == 'file'
+                    and maya.cmds.getAttr(self.maya_node+'.use_ao_map')):
+                file_node = ao_conn[0]
+                file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
+                image = Image(file_path)
+                self.occlusion_texture = Texture(image)
+            
+            emissive_conn = maya.cmds.listConnections(self.maya_node+'.TEX_emissive_map')
+            if (emissive_conn and maya.cmds.objectType(emissive_conn[0]) == 'file'
+                    and maya.cmds.getAttr(self.maya_node+'.use_emissive_map')):
+                file_node = emissive_conn[0]
+                file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
+                image = Image(file_path)
+                self.emissive_texture = Texture(image)
+                emissive_intensity = maya.cmds.getAttr(self.maya_node+'.emissive_intensity')
+                self.emissive_factor = [emissive_intensity, emissive_intensity, emissive_intensity]
+            else:
+                emissive = list(maya.cmds.getAttr(self.maya_node+'.emissive')[0])
+                self.emissive_factor = emissive
+                
+            
+    
+    def _create_metallic_roughness_map(self, metal_map, rough_map):
+
+        metal = QImage(metal_map)
+        rough = QImage(rough_map)
+        metal_pixel = QColor()
+
+        metal = metal.convertToFormat(QImage.Format_RGB32);
+        rough = rough.convertToFormat(QImage.Format_RGB32);
+        metal_uchar_ptr = metal.bits()
+        rough_uchar_ptr = rough.bits()
+        if (not metal.width() == rough.width()
+                or not metal.height() == rough.height()):
+            raise RuntimeError("Error processing material: {}. Metallic map and roughness map must have same dimensions.".format(self.maya_node))
+        width = metal.width();
+        height = metal.height();
+
+        i = 0
+        for y in range(height):
+            for x in range(width):
+                metal_color = struct.unpack('I', metal_uchar_ptr[i:i+4])[0]
+                rough_color = struct.unpack('I', rough_uchar_ptr[i:i+4])[0]
+                metal_pixel.setRgb(0, qGreen(rough_color), qBlue(metal_color))
+                metal_uchar_ptr[i:i+4] = struct.pack('I', metal_pixel.rgb())
+                i+=4
+                
+        output = ExportSettings.out_dir + "/"+self.name+"_metalRough.jpg"
+        return output, metal
     
     @classmethod
     def _get_default_material(cls):
@@ -616,10 +713,20 @@ class Material(ExportItem):
             pbr['baseColorTexture'] = {'index':self.base_color_texture.index}
         else:
             pbr['baseColorFactor'] = self.base_color_factor
-
-        pbr['metallicFactor'] = self.metallic_factor
-        pbr['roughnessFactor'] = self.roughness_factor
         
+        if self.metallic_roughness_texture:
+            pbr['metallicRoughnessTexture'] = {'index':self.metallic_roughness_texture.index}
+        else:
+            pbr['metallicFactor'] = self.metallic_factor
+            pbr['roughnessFactor'] = self.roughness_factor
+        if self.normal_texture:
+            mat_def['normalTexture'] = {'index':self.normal_texture.index}
+        if self.occlusion_texture:
+            mat_def['occlusionTexture'] = {'index':self.occlusion_texture.index}
+        if self.emissive_texture:
+            mat_def['emissiveTexture'] = {'index':self.emissive_texture.index}
+        if self.emissive_factor:
+            mat_def['emissiveFactor'] = self.emissive_factor
         return mat_def
 
 
@@ -811,7 +918,7 @@ class Image(ExportItem):
     def set_defaults(cls):
         cls.instances = []
     
-    def __init__(self, file_path):
+    def __init__(self, file_path, qimage=None):
         file_name = os.path.basename(file_path)
         super(Image, self).__init__(name=file_name)
         self.index = len(Image.instances)
@@ -821,13 +928,26 @@ class Image(ExportItem):
         if mime_suffix == 'jpg':
             mime_suffix = 'jpeg'
         self.mime_type = 'image/{}'.format(mime_suffix)
-            
+        
+        # Need to write this out temporarily or permanently
+        # depending on resource_format
+        if qimage:
+                writer = QImageWriter(file_path, mime_suffix);
+                writer.write(qimage);
+                # delete the write to close file handle
+                del writer
+                
         if ExportSettings.resource_format == ResourceFormats.SOURCE:
-            shutil.copy(file_path, ExportSettings.out_dir)
+            if not qimage:
+                shutil.copy(file_path, ExportSettings.out_dir)
             self.uri = file_name
         else:
             with open(file_path, 'rb') as f:
                 img_bytes = f.read()
+            
+            # Remove the temp qimage because resource_format isn't source
+            if qimage:
+                os.remove(file_path)
             
             if (ExportSettings.resource_format == ResourceFormats.BIN
                     or ExportSettings.file_format == 'glb'):
@@ -840,6 +960,7 @@ class Image(ExportItem):
                 aligned_len = (len(img_bytes) + 3) & ~3
                 for i in range(aligned_len - len(img_bytes)):
                     single_buffer.byte_str += b' '
+                    
         if (ExportSettings.file_format == 'gltf' and
                 ExportSettings.resource_format == ResourceFormats.EMBEDDED):
             self.uri = "data:application/octet-stream;base64," + base64.b64encode(img_bytes)
