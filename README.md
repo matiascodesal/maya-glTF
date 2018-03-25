@@ -56,7 +56,7 @@ glTFExport.export(r"C:\Temp\test.glb", resource_format='bin', anim='keyed', vfli
 ## Current Features
 - Export whole scene from Maya
 - Exports transform nodes and meshes with hierarchy
-- Exports single material shader per mesh (glTF spec).
+- Exports single material shader per mesh currently.
    - Picks the first shader.
 - Lambert, Blinn, Phong use a PBR conversion approximation
    - Base color comes from color attribute as texture or value.
@@ -66,9 +66,3 @@ glTFExport.export(r"C:\Temp\test.glb", resource_format='bin', anim='keyed', vfli
 - glTF and glb supported
 - Options for embedded binary data, single external bin, or preserved external images.
    
-## TODO
-- Implement skinning
-- Implement blendshapes
-- Add option to bake keys on export.
-- Add Export Selection... function.
-- Write tests
