@@ -4,10 +4,12 @@ import os
 import sys
 import base64
 import math
-import maya.cmds
-import maya.OpenMaya as OpenMaya
 import shutil
 import time
+
+import maya.cmds
+import maya.OpenMaya as OpenMaya
+from maya.api import OpenMaya as om
 try:
     from PySide.QtGui import QImage, QColor, qRed, qGreen, qBlue, QImageWriter
 except ImportError:
