@@ -4,10 +4,12 @@ import os
 import sys
 import base64
 import math
-import maya.cmds
-import maya.OpenMaya as OpenMaya
 import shutil
 import time
+
+import maya.cmds
+import maya.OpenMaya as OpenMaya
+from maya.api import OpenMaya as om
 try:
     from PySide.QtGui import QImage, QColor, qRed, qGreen, qBlue, QImageWriter
 except ImportError:
@@ -400,115 +402,77 @@ class Mesh(ExportItem):
     @timeit
     def _getMeshData(self):
         maya.cmds.select(self.maya_node)
-        selList = OpenMaya.MSelectionList()
-        OpenMaya.MGlobal.getActiveSelectionList(selList)
-        meshPath = OpenMaya.MDagPath()
-        selList.getDagPath(0, meshPath)
-        meshIt = OpenMaya.MItMeshPolygon(meshPath)
-        meshFn = OpenMaya.MFnMesh(meshPath)
-        do_color = False
-        if meshFn.numColorSets():
-            do_color=True
-            print "doing color"
-        indices = []
-        positions = [None]*meshFn.numVertices()
-        normals = [None]*meshFn.numVertices()
-        all_colors = [None]*meshFn.numVertices()
-        uvs = [None]*meshFn.numVertices()
-        ids = OpenMaya.MIntArray()
-        tracker = {}
-        points = OpenMaya.MPointArray()
+        sel_list = om.MGlobal.getActiveSelectionList()
+        mesh_path = sel_list.getDagPath(0)
+        mesh_fn = om.MFnMesh(mesh_path)
+        do_color = bool(mesh_fn.numColors())
         if do_color:
-            vertexColorList = OpenMaya.MColorArray()
-            meshFn.getFaceVertexColors(vertexColorList)
-        #meshIt.hasUVs()
-        normal = OpenMaya.MVector()
-        face_verts = OpenMaya.MIntArray()
-        polyNormals = OpenMaya.MFloatVectorArray()
-        meshFn.getNormals(polyNormals)
-        uv_util = OpenMaya.MScriptUtil()
-        uv_util.createFromList([0,0], 2 )
-        uv_ptr = uv_util.asFloat2Ptr()
+            vertex_colors = mesh_fn.getFaceVertexColors()
+
         bbox = BoundingBox()
-        while not meshIt.isDone():
-            meshIt.getTriangles(points, ids)
-            #meshIt.getUVs(u_list, v_list)        
-            meshIt.getVertices(face_verts)
-            for x in range(0, ids.length()):
-                indices.append(ids[x])
-                pos = (points[x].x, points[x].y, points[x].z)
-                
-                local_vert_id = getFaceVertexIndex(face_verts, ids[x])
-                #print "local vert:", local_vert_id
-                norm_id = meshIt.normalIndex(local_vert_id)
-                #meshIt.getNormal(local_vert_id, normal)
-                normal = polyNormals[norm_id]
-                norm = (normal.x, normal.y, normal.z)
-                #print norm
-                meshIt.getUV(local_vert_id, uv_ptr, meshFn.currentUVSetName())
-                u = uv_util.getFloat2ArrayItem( uv_ptr, 0, 0 )
-                v = uv_util.getFloat2ArrayItem( uv_ptr, 0, 1 )
-                # flip V for openGL
-                # This fails if the the UV is exactly on the border (e.g. (0.5,1))
-                # but we really don't know what udim it's in for that case.
+
+        def _iter_mesh_faces(mesh_path):
+            mesh_iter = om.MItMeshPolygon(mesh_path)
+            for idx in xrange(mesh_iter.count()):
+                mesh_iter.setIndex(idx)
+                yield mesh_iter
+
+        indices = []
+        positions = [None] * mesh_fn.numVertices
+        normals = positions[:]
+        uvs = positions[:]
+        colors = positions[:]
+
+        for face in _iter_mesh_faces(mesh_path):
+            face_vertices = list(face.getVertices())
+            for pos, vertex_index in zip(*face.getTriangles()):
+                face_vertex = face_vertices.index(vertex_index)
+                indices.append(vertex_index)
+                pos = tuple(list(pos)[:3])
+                norm = tuple(face.getNormal(face_vertex))
+                u, v = face.getUV(face_vertex)
                 if ExportSettings.vflip:
                     v = int(v) + (1 - (v % 1))
                 uv = (u, v)
-                # using a string IDs + dictionary for quick
-                # tracking of pos/norm/uv combo's that we've seen.
-                comp_str = '{},{},{}:{},{},{}:{},{}'.format(pos[0], pos[1], pos[2], norm[0], norm[1], norm[2], uv[0], uv[1])
-                if not positions[ids[x]]:   
-                    positions[ids[x]] = pos
-                    normals[ids[x]] = norm
-                    uvs[ids[x]] = uv
-                    tracker[comp_str] = ids[x]
-                elif not ( positions[ids[x]] == pos and
-                            normals[ids[x]] == norm and
-                            uvs[ids[x]] == uv):
-                    matched = False
-                    if (hasattr(tracker, comp_str)):
-                        matched = True
-                        indices[-1] = tracker[comp_str]
-                        break
-                    if not matched:
-                        positions.append(pos)
-                        normals.append(norm)
-                        uvs.append(uv)
-                        indices[-1] = len(positions)-1
-                        
-                
-                if do_color:
-                    color = vertexColorList[ids[x]]
-                    all_colors[ids[x]] = (color.r, color.g, color.b)
-                if points[x].x > bbox.xmax:
-                    bbox.xmax = points[x].x
-                elif points[x].y > bbox.ymax:
-                    bbox.ymax = points[x].y
-                elif points[x].z > bbox.zmax:
-                    bbox.zmax = points[x].z
-                elif points[x].x < bbox.xmin:
-                    bbox.xmin = points[x].x
-                elif points[x].y < bbox.ymin:
-                    bbox.ymin = points[x].y
-                elif points[x].z < bbox.zmin:
-                    bbox.zmin = points[x].z   
-            meshIt.next()
+                if positions[vertex_index] is None:
+                    positions[vertex_index] = pos
+                    normals[vertex_index] = norm
+                    uvs[vertex_index] = uv
+                elif not (
+                        positions[vertex_index] == pos and
+                        normals[vertex_index] == norm and
+                        uvs[vertex_index] == uv):
+                    positions.append(pos)
+                    normals.append(norm)
+                    uvs.append(uv)
+                    indices[-1] = len(positions)-1
 
-        if not len(Buffer.instances):
+                if do_color:
+                    colors[vertex_index] = tuple(list(vertex_colors[vertex_index][:3]))
+
+        bbox.xmax = max(positions, key=lambda x: x[0])[0]
+        bbox.xmin = min(positions, key=lambda x: x[0])[0]
+        bbox.ymax = max(positions, key=lambda x: x[1])[1]
+        bbox.ymin = min(positions, key=lambda x: x[1])[1]
+        bbox.zmax = max(positions, key=lambda x: x[2])[2]
+        bbox.zmin = min(positions, key=lambda x: x[2])[2]
+
+        if not Buffer.instances:
             primary_buffer = Buffer('primary_buffer')
         else:
             primary_buffer = Buffer.instances[0]
-        
-        if len(positions) >= 0xffff:
+
+        if len(positions) >= 0xFFFF:
             idx_component_type = 5125
         else:
             idx_component_type = 5123
+
         self.indices_accessor = Accessor(indices, "SCALAR", idx_component_type, 34963, primary_buffer, name=self.name + '_idx')
         self.indices_accessor.min = [0]
         self.indices_accessor.max = [len(positions) - 1]
         self.position_accessor = Accessor(positions, "VEC3", 5126, 34962, primary_buffer, name=self.name + '_pos')
-        self.position_accessor.max = [ bbox.xmax, bbox.ymax, bbox.zmax ]
-        self.position_accessor.min =  [ bbox.xmin, bbox.ymin, bbox.zmin ]
+        self.position_accessor.max = [bbox.xmax, bbox.ymax, bbox.zmax]
+        self.position_accessor.min = [bbox.xmin, bbox.ymin, bbox.zmin]
         self.normal_accessor = Accessor(normals, "VEC3", 5126, 34962, primary_buffer, name=self.name + '_norm')
         self.texcoord0_accessor = Accessor(uvs, "VEC2", 5126, 34962, primary_buffer, name=self.name + '_uv')
         
