@@ -672,7 +672,10 @@ class Material(ExportItem):
     
     def to_json(self):
         pbr = {}
-        mat_def = {'pbrMetallicRoughness': pbr}
+        # TODO: Potentially optimize by setting to OPAQUE if there's no transparency.
+        # TODO: Support doubleSided property
+        mat_def = {'alphaMode': 'BLEND', 'pbrMetallicRoughness': pbr}
+
         if self.base_color_texture:
             pbr['baseColorTexture'] = {'index':self.base_color_texture.index}
         else:
@@ -691,6 +694,7 @@ class Material(ExportItem):
             mat_def['emissiveTexture'] = {'index':self.emissive_texture.index}
         if self.emissive_factor:
             mat_def['emissiveFactor'] = self.emissive_factor
+        
         return mat_def
 
 
