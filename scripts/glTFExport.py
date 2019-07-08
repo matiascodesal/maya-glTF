@@ -672,14 +672,20 @@ class Material(ExportItem):
     
     def to_json(self):
         pbr = {}
-        # TODO: Potentially optimize by setting to OPAQUE if there's no transparency.
+        # TODO: Potentially add alphaMode=OPAQUE for textured materials that don't have
+        # an alpha channel or have an opaque alpha
         # TODO: Support doubleSided property
-        mat_def = {'alphaMode': 'BLEND', 'pbrMetallicRoughness': pbr}
-
+        mat_def = {'pbrMetallicRoughness': pbr}
+        mat_def['alphaMode'] = 'BLEND'
         if self.base_color_texture:
             pbr['baseColorTexture'] = {'index':self.base_color_texture.index}
         else:
             pbr['baseColorFactor'] = self.base_color_factor
+            if len(self.base_color_factor) == 4 \
+                    and self.base_color_factor[3] < 1:
+                mat_def['alphaMode'] = 'BLEND'
+            else:
+                mat_def['alphaMode'] = 'OPAQUE'
         
         if self.metallic_roughness_texture:
             pbr['metallicRoughnessTexture'] = {'index':self.metallic_roughness_texture.index}
