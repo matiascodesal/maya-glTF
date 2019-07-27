@@ -464,17 +464,17 @@ class Mesh(ExportItem):
             primary_buffer = Buffer.instances[0]
         
         if len(positions) >= 0xffff:
-            idx_component_type = 5125
+            idx_component_type = ComponentTypes.UINT
         else:
-            idx_component_type = 5123
+            idx_component_type = ComponentTypes.USHORT
         self.indices_accessor = Accessor(indices, "SCALAR", idx_component_type, 34963, primary_buffer, name=self.name + '_idx')
-        self.indices_accessor.min = [0]
-        self.indices_accessor.max = [len(positions) - 1]
-        self.position_accessor = Accessor(positions, "VEC3", 5126, 34962, primary_buffer, name=self.name + '_pos')
-        self.position_accessor.max = list(boundingBox.max())[:3]
-        self.position_accessor.min =  list(boundingBox.min())[:3]
-        self.normal_accessor = Accessor(normals, "VEC3", 5126, 34962, primary_buffer, name=self.name + '_norm')
-        self.texcoord0_accessor = Accessor(uvs, "VEC2", 5126, 34962, primary_buffer, name=self.name + '_uv')
+        self.indices_accessor.min_ = [0]
+        self.indices_accessor.max_ = [len(positions) - 1]
+        self.position_accessor = Accessor(positions, "VEC3", ComponentTypes.FLOAT, 34962, primary_buffer, name=self.name + '_pos')
+        self.position_accessor.max_ = list(boundingBox.max())[:3]
+        self.position_accessor.min_ =  list(boundingBox.min())[:3]
+        self.normal_accessor = Accessor(normals, "VEC3", ComponentTypes.FLOAT, 34962, primary_buffer, name=self.name + '_norm')
+        self.texcoord0_accessor = Accessor(uvs, "VEC2", ComponentTypes.FLOAT, 34962, primary_buffer, name=self.name + '_uv')
 
         
 
@@ -712,7 +712,7 @@ class Camera(ExportItem):
     instances = []
     default_cameras = ['|top', '|front', '|side', '|persp']
     maya_node = None
-    type = None
+    type_ = None
     znear = 0.1
     zfar = 1000
     
@@ -733,14 +733,14 @@ class Camera(ExportItem):
         if not self.type:
             # TODO: use custom error or ensure type is set
             raise RuntimeError("Type property was not defined")
-        camera_def = {'type' : self.type}
+        camera_def = {'type' : self.type_}
         camera_def[self.type] = {'znear' : self.znear,
                                     'zfar' : self.zfar}
         return camera_def
  
     
 class PerspectiveCamera(Camera):
-    type = 'perspective'
+    type_= 'perspective'
     
     def __init__(self, maya_node):
         super(PerspectiveCamera, self).__init__(maya_node)
@@ -755,7 +755,7 @@ class PerspectiveCamera(Camera):
         return camera_def
     
 class OrthographicCamera(Camera):
-    type = 'orthographic'
+    type_= 'orthographic'
     xmag = 1.0
     ymag = 1.0
     
@@ -861,13 +861,13 @@ class AnimationSampler(ExportItem):
         time_unit = maya.cmds.currentUnit(query=True, time=True)
         fps = self.time_map[time_unit]
         keyframes = [key/fps for key in keyframes]
-        self.input_accessor = Accessor(keyframes, "SCALAR", 5126, None, primary_buffer, name=self.name + '_tTime')
-        self.input_accessor.min = [keyframes[0]]
-        self.input_accessor.max = [keyframes[-1]]
+        self.input_accessor = Accessor(keyframes, "SCALAR", ComponentTypes.FLOAT, None, primary_buffer, name=self.name + '_tTime')
+        self.input_accessor.min_ = [keyframes[0]]
+        self.input_accessor.max_ = [keyframes[-1]]
         if path in ['translation', 'scale']:
-            self.output_accessor = Accessor(values, "VEC3", 5126, None, primary_buffer, name=self.name + '_tVal')
+            self.output_accessor = Accessor(values, "VEC3", ComponentTypes.FLOAT, None, primary_buffer, name=self.name + '_tVal')
         else:
-            self.output_accessor = Accessor(values, "VEC4", 5126, None, primary_buffer, name=self.name + '_tVal')
+            self.output_accessor = Accessor(values, "VEC4", ComponentTypes.FLOAT, None, primary_buffer, name=self.name + '_tVal')
         
     def _get_interpolation(self, node, path, first_key):
         for axis in ['X','Y','Z']:   
@@ -1046,34 +1046,47 @@ class BufferView(ExportItem):
             buffer_view_def['target'] = self.target
             
         return buffer_view_def
-    
+
+
+class ComponentTypes(object):
+    USHORT = 5123
+    UINT = 5125
+    FLOAT = 5126
+
+
 class Accessor(ExportItem):
     instances = []
     buffer_view = None
     byte_offset = 0
     component_type = None
     count = None
-    type = None
+    type_ = None
     src_data = None
-    max  = None
-    min = None
-    type_codes = {"SCALAR":1,"VEC2":2,"VEC3":3,"VEC4":4}
-    component_type_codes = {5123:"H", # unsigned short
-                            5125:"I", # unsigned int
-                            5126:"f"  # float
-                           }
+    max_  = None
+    min_ = None
+    type_codes = {
+        "SCALAR":1,
+        "VEC2":2,
+        "VEC3":3,
+        "VEC4":4
+    }
+    component_type_codes = {
+        ComponentTypes.USHORT:"H", # unsigned short
+        ComponentTypes.UINT:"I", # unsigned int
+        ComponentTypes.FLOAT:"f"  # float
+    }
     
     @classmethod
     def set_defaults(cls):
         cls.instances = []
     
-    def __init__(self, data, type, component_type, target, buffer, name=None):
+    def __init__(self, data, type_, component_type, target, buffer, name=None):
         super(Accessor, self).__init__(name=name)
         self.index = len(Accessor.instances)
         Accessor.instances.append(self)
         self.src_data = data
         self.component_type = component_type
-        self.type = type
+        self.type_= type_
         byte_code = self.component_type_codes[component_type]*self.type_codes[type]
         
         buffer_end = len(buffer)
@@ -1088,8 +1101,8 @@ class Accessor(ExportItem):
           "count" : len(self.src_data),
           "type" : self.type
         }
-        if self.max:
+        if self.max_:
             accessor_def['max'] = self.max
-        if self.min:
+        if self.min_:
             accessor_def['min'] = self.min
         return accessor_def
