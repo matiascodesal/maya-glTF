@@ -277,7 +277,6 @@ class Node(ExportItem):
         self.index = len(Node.instances)
         Node.instances.append(self)
         self.children = []
-        #self.matrix = maya.cmds.xform(self.maya_node, query=True, matrix=True)
         self.translation = maya.cmds.getAttr(self.maya_node+'.translate')[0]
         self.rotation = self._get_rotation_quaternion()
         self.scale = maya.cmds.getAttr(self.maya_node+'.scale')[0]
@@ -287,7 +286,9 @@ class Node(ExportItem):
         if maya_children:
             for child in maya_children:
                 childType = maya.cmds.objectType(child)
-                if childType == 'mesh':
+                if childType == 'mesh' and not maya.cmds.getAttr(child + ".intermediateObject"):
+                    print(maya.cmds.getAttr(child + ".intermediateObject"))
+                    print(child)
                     mesh = Mesh(child)
                     self.mesh = mesh 
                 elif childType == 'camera':
@@ -448,7 +449,7 @@ class Mesh(ExportItem):
                     indices[-1] = len(positions)-1
 
                 if do_color:
-                    colors[vertex_index] = tuple(list(vertex_colors[vertex_index][:3]))
+                    colors[vertex_index] = tuple(list(vertex_colors[vertex_index])[:3])
 
         bbox.xmax = max(positions, key=lambda x: x[0])[0]
         bbox.xmin = min(positions, key=lambda x: x[0])[0]
@@ -611,14 +612,16 @@ class Material(ExportItem):
                 file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
                 image = Image(file_path)
                 self.normal_texture = Texture(image)
-                
-            ao_conn = maya.cmds.listConnections(self.maya_node+'.TEX_ao_map')
-            if (ao_conn and maya.cmds.objectType(ao_conn[0]) == 'file'
-                    and maya.cmds.getAttr(self.maya_node+'.use_ao_map')):
-                file_node = ao_conn[0]
-                file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
-                image = Image(file_path)
-                self.occlusion_texture = Texture(image)
+            
+            # Not all Stingray preset shaders have an AO map attribute
+            if maya.cmds.attributeQuery("TEX_ao_map", node=self.maya_node, exists=True):    
+                ao_conn = maya.cmds.listConnections(self.maya_node+'.TEX_ao_map')
+                if (ao_conn and maya.cmds.objectType(ao_conn[0]) == 'file'
+                        and maya.cmds.getAttr(self.maya_node+'.use_ao_map')):
+                    file_node = ao_conn[0]
+                    file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
+                    image = Image(file_path)
+                    self.occlusion_texture = Texture(image)
             
             emissive_conn = maya.cmds.listConnections(self.maya_node+'.TEX_emissive_map')
             if (emissive_conn and maya.cmds.objectType(emissive_conn[0]) == 'file'
