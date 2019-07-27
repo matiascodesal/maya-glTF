@@ -9,7 +9,6 @@ import time
 
 import maya.cmds
 import maya.OpenMaya as OpenMaya
-from maya.api import OpenMaya as om
 try:
     from PySide.QtGui import QImage, QColor, qRed, qGreen, qBlue, QImageWriter
 except ImportError:
@@ -113,8 +112,6 @@ class GLTFExporter(object):
         BufferView.set_defaults()
         Accessor.set_defaults()
         
-        
-        
         ExportSettings.out_file = file_path
         ExportSettings.resource_format = resource_format
         ExportSettings.anim = anim
@@ -212,13 +209,6 @@ class GLTFEncoder(json.JSONEncoder):
             return obj.to_json()
         # Let the base class default method raise the TypeError
         return json.JSONEncoder.default(self, obj)
-        '''
-        for key in obj.keys():
-            if key not in ignored_keys:
-                obj[key] = [item.to_json() for item in obj[key]]
-        
-        return obj
-        '''
    
 class ExportItem(object):
     def __init__(self, name=None):
@@ -287,8 +277,6 @@ class Node(ExportItem):
             for child in maya_children:
                 childType = maya.cmds.objectType(child)
                 if childType == 'mesh' and not maya.cmds.getAttr(child + ".intermediateObject"):
-                    print(maya.cmds.getAttr(child + ".intermediateObject"))
-                    print(child)
                     mesh = Mesh(child)
                     self.mesh = mesh 
                 elif childType == 'camera':
@@ -320,7 +308,7 @@ class Node(ExportItem):
         #make a object of type MSelectionList
         sel_list=OpenMaya.MSelectionList()
         #add something to it
-        #you could retrieve this form function or the user selection
+        #you could retrieve this from function or the user selection
         sel_list.add(self.maya_node)
         #fill in the MObject
         sel_list.getDependNode(0,obj)
@@ -396,86 +384,98 @@ class Mesh(ExportItem):
                     
     def _getMaterial(self):
         shadingGrps = maya.cmds.listConnections(self.maya_node,type='shadingEngine')
-        # glTF only allows one materical per mesh, so we'll just grab the first one.
+        # We currently only support one materical per mesh, so we'll just grab the first one.
+        # TODO: support facegroups as glTF primitivies to support one material per facegroup
         shader = maya.cmds.ls(maya.cmds.listConnections(shadingGrps),materials=True)[0]
         self.material = Material(shader)
     
     @timeit
     def _getMeshData(self):
         maya.cmds.select(self.maya_node)
-        sel_list = om.MGlobal.getActiveSelectionList()
-        mesh_path = sel_list.getDagPath(0)
-        mesh_fn = om.MFnMesh(mesh_path)
-        do_color = bool(mesh_fn.numColors())
-        if do_color:
-            vertex_colors = mesh_fn.getFaceVertexColors()
-
-        bbox = BoundingBox()
-
-        def _iter_mesh_faces(mesh_path):
-            mesh_iter = om.MItMeshPolygon(mesh_path)
-            for idx in xrange(mesh_iter.count()):
-                mesh_iter.setIndex(idx)
-                yield mesh_iter
-
+        selList = OpenMaya.MSelectionList()
+        OpenMaya.MGlobal.getActiveSelectionList(selList)
+        meshPath = OpenMaya.MDagPath()
+        selList.getDagPath(0, meshPath)
+        meshIt = OpenMaya.MItMeshPolygon(meshPath)
+        meshFn = OpenMaya.MFnMesh(meshPath)
+        dagFn = OpenMaya.MFnDagNode(meshPath)
+        boundingBox = dagFn.boundingBox()
+        do_color = False
+        if meshFn.numColorSets():
+            do_color=True
         indices = []
-        positions = [None] * mesh_fn.numVertices
-        normals = positions[:]
-        uvs = positions[:]
-        colors = positions[:]
-
-        for face in _iter_mesh_faces(mesh_path):
-            face_vertices = list(face.getVertices())
-            for pos, vertex_index in zip(*face.getTriangles()):
-                face_vertex = face_vertices.index(vertex_index)
+        positions = [None]*meshFn.numVertices()
+        normals = [None]*meshFn.numVertices()
+        colors = [None]*meshFn.numVertices()
+        uvs = [None]*meshFn.numVertices()
+        ids = OpenMaya.MIntArray()
+        points = OpenMaya.MPointArray()
+        if do_color:
+            vertexColorList = OpenMaya.MColorArray()
+            meshFn.getFaceVertexColors(vertexColorList)
+        normal = OpenMaya.MVector()
+        face_verts = OpenMaya.MIntArray()
+        polyNormals = OpenMaya.MFloatVectorArray()
+        meshFn.getNormals(polyNormals)
+        uv_util = OpenMaya.MScriptUtil()
+        uv_util.createFromList([0,0], 2 )
+        uv_ptr = uv_util.asFloat2Ptr()
+        while not meshIt.isDone():
+            meshIt.getTriangles(points, ids)  
+            meshIt.getVertices(face_verts)
+            face_vertices = list(face_verts)
+            for point, vertex_index in zip(points, ids):
                 indices.append(vertex_index)
-                pos = tuple(list(pos)[:3])
-                norm = tuple(face.getNormal(face_vertex))
-                u, v = face.getUV(face_vertex)
+                pos = (point.x, point.y, point.z)
+                face_vert_id = face_vertices.index(vertex_index)
+                norm_id = meshIt.normalIndex(face_vert_id)
+                norm = polyNormals[norm_id]
+                norm = (norm.x, norm.y, norm.z)
+                meshIt.getUV(face_vert_id, uv_ptr, meshFn.currentUVSetName())
+                u = uv_util.getFloat2ArrayItem( uv_ptr, 0, 0 )
+                v = uv_util.getFloat2ArrayItem( uv_ptr, 0, 1 )
+                # flip V for openGL
+                # This fails if the the UV is exactly on the border (e.g. (0.5,1))
+                # but we really don't know what udim it's in for that case.
                 if ExportSettings.vflip:
                     v = int(v) + (1 - (v % 1))
                 uv = (u, v)
-                if positions[vertex_index] is None:
+                if not positions[vertex_index]:   
                     positions[vertex_index] = pos
                     normals[vertex_index] = norm
                     uvs[vertex_index] = uv
-                elif not (
-                        positions[vertex_index] == pos and
-                        normals[vertex_index] == norm and
-                        uvs[vertex_index] == uv):
+                elif not ( positions[vertex_index] == pos and
+                            normals[vertex_index] == norm and
+                            uvs[vertex_index] == uv):
                     positions.append(pos)
                     normals.append(norm)
                     uvs.append(uv)
                     indices[-1] = len(positions)-1
-
+                        
+                
                 if do_color:
-                    colors[vertex_index] = tuple(list(vertex_colors[vertex_index])[:3])
+                    color = vertexColorList[vertex_index]
+                    colors[vertex_index] = (color.r, color.g, color.b)   
+            meshIt.next()
 
-        bbox.xmax = max(positions, key=lambda x: x[0])[0]
-        bbox.xmin = min(positions, key=lambda x: x[0])[0]
-        bbox.ymax = max(positions, key=lambda x: x[1])[1]
-        bbox.ymin = min(positions, key=lambda x: x[1])[1]
-        bbox.zmax = max(positions, key=lambda x: x[2])[2]
-        bbox.zmin = min(positions, key=lambda x: x[2])[2]
-
-        if not Buffer.instances:
+        if not len(Buffer.instances):
             primary_buffer = Buffer('primary_buffer')
         else:
             primary_buffer = Buffer.instances[0]
-
-        if len(positions) >= 0xFFFF:
+        
+        if len(positions) >= 0xffff:
             idx_component_type = 5125
         else:
             idx_component_type = 5123
-
         self.indices_accessor = Accessor(indices, "SCALAR", idx_component_type, 34963, primary_buffer, name=self.name + '_idx')
         self.indices_accessor.min = [0]
         self.indices_accessor.max = [len(positions) - 1]
         self.position_accessor = Accessor(positions, "VEC3", 5126, 34962, primary_buffer, name=self.name + '_pos')
-        self.position_accessor.max = [bbox.xmax, bbox.ymax, bbox.zmax]
-        self.position_accessor.min = [bbox.xmin, bbox.ymin, bbox.zmin]
+        self.position_accessor.max = list(boundingBox.max())[:3]
+        self.position_accessor.min =  list(boundingBox.min())[:3]
         self.normal_accessor = Accessor(normals, "VEC3", 5126, 34962, primary_buffer, name=self.name + '_norm')
         self.texcoord0_accessor = Accessor(uvs, "VEC2", 5126, 34962, primary_buffer, name=self.name + '_uv')
+
         
 
 class Material(ExportItem):
@@ -1093,38 +1093,3 @@ class Accessor(ExportItem):
         if self.min:
             accessor_def['min'] = self.min
         return accessor_def
-    
-
-class BoundingBox(object):
-    xmin = 0
-    ymin = 0
-    zmin = 0
-    xmax = 0
-    ymax = 0
-    zmax = 0  
-
-def getFaceVertexIndex(face_verts, obj_vert):
-    for x in range(0, face_verts.length()):
-        if face_verts[x] == obj_vert:
-            return x
-
-def getBoundingBox():
-    transform = 'pCube1'
-
-    mSel = om.MSelectionList()
-    dagPath = om.MDagPath()
-    mSel.add( transform )
-    mSel.getDagPath(0, dagPath)
-
-    dagFn = om.MFnDagNode(dagPath)
-
-    # Returns the bounding box for the dag node in object space.
-    boundingBox = dagFn.boundingBox()
-
-    # There's a few useful methods available, including min and max
-    # which will return the min/max values represented in the attribute editor.
-
-    min = boundingBox.min()
-    max = boundingBox.max()
-
-    
