@@ -730,11 +730,11 @@ class Camera(ExportItem):
         
         
     def to_json(self):
-        if not self.type:
+        if not self.type_:
             # TODO: use custom error or ensure type is set
             raise RuntimeError("Type property was not defined")
         camera_def = {'type' : self.type_}
-        camera_def[self.type] = {'znear' : self.znear,
+        camera_def[self.type_] = {'znear' : self.znear,
                                     'zfar' : self.zfar}
         return camera_def
  
@@ -750,8 +750,8 @@ class PerspectiveCamera(Camera):
         
     def to_json(self):
         camera_def = super(PerspectiveCamera, self).to_json()
-        camera_def[self.type]['aspectRatio'] = self.aspect_ratio
-        camera_def[self.type]['yfov'] = self.yfov
+        camera_def[self.type_]['aspectRatio'] = self.aspect_ratio
+        camera_def[self.type_]['yfov'] = self.yfov
         return camera_def
     
 class OrthographicCamera(Camera):
@@ -767,8 +767,8 @@ class OrthographicCamera(Camera):
     
     def to_json(self):
         camera_def = super(OrthographicCamera, self).to_json()
-        camera_def[self.type]['xmag'] = self.xmag
-        camera_def[self.type]['ymag'] = self.ymag
+        camera_def[self.type_]['xmag'] = self.xmag
+        camera_def[self.type_]['ymag'] = self.ymag
         return camera_def
     
     
@@ -936,7 +936,7 @@ class Image(ExportItem):
                 # 4-byte-aligned
                 aligned_len = (len(img_bytes) + 3) & ~3
                 for i in range(aligned_len - len(img_bytes)):
-                    single_buffer.byte_str += b' '
+                    single_buffer.byte_str += b'0'
                     
         if (ExportSettings.file_format == 'gltf' and
                 ExportSettings.resource_format == ResourceFormats.EMBEDDED):
@@ -993,8 +993,8 @@ class Buffer(ExportItem):
     def __len__(self):
         return len(self.byte_str)
     
-    def append_data(self, data, type):
-        pack_type = '<' + type
+    def append_data(self, data, type_):
+        pack_type = '<' + type_
         packed_data = []
         for item in data:
             if isinstance(item, (list, tuple)):
@@ -1005,7 +1005,7 @@ class Buffer(ExportItem):
         # 4-byte-aligned
         aligned_len = (len(self.byte_str) + 3) & ~3
         for i in range(aligned_len - len(self.byte_str)):
-            self.byte_str += b' '
+            self.byte_str += b'0'
     
     def to_json(self):
         buffer_def = {"byteLength" : len(self)}
@@ -1087,7 +1087,7 @@ class Accessor(ExportItem):
         self.src_data = data
         self.component_type = component_type
         self.type_= type_
-        byte_code = self.component_type_codes[component_type]*self.type_codes[type]
+        byte_code = self.component_type_codes[component_type]*self.type_codes[type_]
         
         buffer_end = len(buffer)
         buffer.append_data(self.src_data, byte_code)
@@ -1099,10 +1099,10 @@ class Accessor(ExportItem):
           "byteOffset" : self.byte_offset,
           "componentType" : self.component_type,
           "count" : len(self.src_data),
-          "type" : self.type
+          "type" : self.type_
         }
         if self.max_:
-            accessor_def['max'] = self.max
+            accessor_def['max'] = self.max_
         if self.min_:
-            accessor_def['min'] = self.min
+            accessor_def['min'] = self.min_
         return accessor_def
