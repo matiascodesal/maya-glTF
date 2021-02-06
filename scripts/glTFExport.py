@@ -159,7 +159,6 @@ class GLTFExporter(object):
         
         if not Scene.instances[0].nodes:
             raise RuntimeError('Scene is empty.  No file will be exported.')
-        
         if ExportSettings.file_format == 'glb':
             
             json_str = json.dumps(self.output, sort_keys=True, separators=(',', ':'), cls=GLTFEncoder)
@@ -471,8 +470,10 @@ class Mesh(ExportItem):
         self.indices_accessor.min_ = [0]
         self.indices_accessor.max_ = [len(positions) - 1]
         self.position_accessor = Accessor(positions, "VEC3", ComponentTypes.FLOAT, 34962, primary_buffer, name=self.name + '_pos')
-        self.position_accessor.max_ = list(boundingBox.max())[:3]
-        self.position_accessor.min_ =  list(boundingBox.min())[:3]
+        bbox_max = boundingBox.max()
+        self.position_accessor.max_ = [bbox_max[0],bbox_max[1],bbox_max[2]]
+        bbox_min = boundingBox.min()
+        self.position_accessor.min_ =  [bbox_min[0],bbox_min[1],bbox_min[2]]
         self.normal_accessor = Accessor(normals, "VEC3", ComponentTypes.FLOAT, 34962, primary_buffer, name=self.name + '_norm')
         self.texcoord0_accessor = Accessor(uvs, "VEC2", ComponentTypes.FLOAT, 34962, primary_buffer, name=self.name + '_uv')
 
@@ -682,6 +683,9 @@ class Material(ExportItem):
         mat_def['alphaMode'] = 'BLEND'
         if self.base_color_texture:
             pbr['baseColorTexture'] = {'index':self.base_color_texture.index}
+            color = QImage(self.base_color_texture.image.src_file_path)
+            if not color.hasAlphaChannel():
+                mat_def['alphaMode'] = 'OPAQUE'
         else:
             pbr['baseColorFactor'] = self.base_color_factor
             if len(self.base_color_factor) == 4 \
@@ -890,6 +894,7 @@ class Image(ExportItem):
     uri = None
     buffer_view = None
     mime_type = None
+    src_file_path = ""
     
     @classmethod
     def set_defaults(cls):
@@ -897,6 +902,7 @@ class Image(ExportItem):
     
     def __init__(self, file_path, qimage=None):
         file_name = os.path.basename(file_path)
+        self.src_file_path = file_path
         super(Image, self).__init__(name=file_name)
         self.index = len(Image.instances)
         Image.instances.append(self)
