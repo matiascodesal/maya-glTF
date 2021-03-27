@@ -1,3 +1,6 @@
+from __future__ import print_function
+from __future__ import absolute_import
+from __future__ import division
 import json
 import struct
 import os
@@ -11,8 +14,10 @@ import maya.cmds
 import maya.OpenMaya as OpenMaya
 try:
     from PySide.QtGui import QImage, QColor, qRed, qGreen, qBlue, QImageWriter
+    from PySide.QtCore import QByteArray
 except ImportError:
     from PySide2.QtGui import QImage, QColor, qRed, qGreen, qBlue, QImageWriter
+    from PySide2.QtCore import QByteArray
 
 # TODO don't export hidden nodes?
 
@@ -23,8 +28,8 @@ def timeit(method):
         result = method(*args, **kw)
         te = time.time()
 
-        print '%r (%r, %r) %2.2f sec' % \
-              (method.__name__, args, kw, te-ts)
+        print('%r (%r, %r) %2.2f sec' % \
+              (method.__name__, args, kw, te-ts))
         return result
 
     return timed
@@ -162,7 +167,7 @@ class GLTFExporter(object):
         if ExportSettings.file_format == 'glb':
             
             json_str = json.dumps(self.output, sort_keys=True, separators=(',', ':'), cls=GLTFEncoder)
-            json_bin = bytearray(json_str.encode(encoding='UTF-8'))
+            json_bin = bytearray(json_str.encode(encoding='latin-1'))
             # 4-byte-aligned
             aligned_len = (len(json_bin) + 3) & ~3
             for i in range(aligned_len - len(json_bin)):
@@ -455,7 +460,7 @@ class Mesh(ExportItem):
                 if do_color:
                     color = vertexColorList[vertex_index]
                     colors[vertex_index] = (color.r, color.g, color.b)   
-            meshIt.next()
+            next(meshIt)
 
         if not len(Buffer.instances):
             primary_buffer = Buffer('primary_buffer')
@@ -501,7 +506,7 @@ class Material(ExportItem):
         cls.instances = []
         cls.default_material_id = None
     
-    def __new__(cls, maya_node):
+    def __new__(cls, maya_node, *args, **kwargs):
         if maya_node:
             name = maya.cmds.ls(maya_node, shortNames=True)[0]
             matches = [mat for mat in Material.instances if mat.name == name]
@@ -510,10 +515,10 @@ class Material(ExportItem):
             
             maya_obj_type = maya.cmds.objectType(maya_node)
             if maya_obj_type not in cls.supported_materials:
-                print "Shader {} is not a supported shader type: {}".format(maya_node, maya_obj_type)
+                print("Shader {} is not a supported shader type: {}".format(maya_node, maya_obj_type))
                 return cls._get_default_material()
         
-        return super(Material, cls).__new__(cls, maya_node)
+        return super(Material, cls).__new__(cls, *args, **kwargs)
         
     def __init__(self, maya_node):
         if hasattr(self, 'index'):
@@ -915,7 +920,7 @@ class Image(ExportItem):
         # Need to write this out temporarily or permanently
         # depending on resource_format
         if qimage:
-                writer = QImageWriter(file_path, mime_suffix);
+                writer = QImageWriter(file_path, QByteArray(bytes(str(mime_suffix).encode("latin-1"))));
                 writer.write(qimage);
                 # delete the write to close file handle
                 del writer
@@ -946,7 +951,7 @@ class Image(ExportItem):
                     
         if (ExportSettings.file_format == 'gltf' and
                 ExportSettings.resource_format == ResourceFormats.EMBEDDED):
-            self.uri = "data:application/octet-stream;base64," + base64.b64encode(img_bytes)
+            self.uri = "data:application/octet-stream;base64," + base64.b64encode(img_bytes).decode("latin-1")
     
     def to_json(self):
         img_def = {'mimeType' : self.mime_type}
@@ -981,7 +986,7 @@ class Sampler(ExportItem):
     
 class Buffer(ExportItem):
     instances = []
-    byte_str = ""
+    byte_str = b""
     uri = ''
     
     @classmethod
@@ -1018,7 +1023,7 @@ class Buffer(ExportItem):
         if self.uri and ExportSettings.resource_format == ResourceFormats.BIN:
             buffer_def['uri'] = self.uri
         elif ExportSettings.resource_format in [ResourceFormats.EMBEDDED, ResourceFormats.SOURCE]:
-            buffer_def['uri'] = "data:application/octet-stream;base64," + base64.b64encode(self.byte_str)
+            buffer_def['uri'] = "data:application/octet-stream;base64," + base64.b64encode(self.byte_str).decode("latin-1")
         # no uri for GLB
         return buffer_def
 
